@@ -1,0 +1,62 @@
+{{define "content"}}
+<div class="page-head">
+  <h1>{{.Expense.Merchant}}</h1>
+  <div class="filter-actions">
+    <a class="btn btn-secondary btn-sm" href="/expenses/{{.Expense.ID}}/edit">Edit</a>
+    <a class="btn btn-secondary btn-sm" href="/ledger">Back to Ledger</a>
+  </div>
+</div>
+
+<div class="review-layout">
+  {{if .Expense.ReceiptImageID}}
+  <div class="panel">
+    <h2 style="margin-bottom: 0.5rem;">Saved receipt</h2>
+    <img src="/receipts/{{.Expense.ReceiptImageID}}" alt="Saved receipt for {{.Expense.Merchant}}" style="max-width: 100%; height: auto; border-radius: 4px;">
+  </div>
+  {{end}}
+
+  <div class="panel form-stack">
+    <div>
+      <div class="muted" style="font-size: 0.875rem;">
+        {{if eq .Expense.Kind "refund"}}Refund{{else}}Amount{{end}}
+      </div>
+      <div class="total-figure num {{if eq .Expense.Kind "refund"}}refund-amount{{end}}" style="margin: 0.15rem 0;">
+        {{if eq .Expense.Kind "refund"}}-{{end}}{{formatMoney .Expense.AmountCents}}
+      </div>
+    </div>
+
+    <div>
+      <div><strong>Date:</strong> <span class="num">{{formatDate .Expense.PurchaseDate}}</span></div>
+      <div><strong>Payment:</strong> {{paymentLabel .Expense.PaymentMethod}}</div>
+      <div><strong>Category:</strong> {{.Expense.CategoryName}}</div>
+      <div><strong>Source:</strong> {{.Expense.Source}}</div>
+      {{if .Expense.PaidByName}}
+      <div><strong>Paid by:</strong> {{.Expense.PaidByName}}</div>
+      {{end}}
+      {{if .Expense.CreatedByName}}
+      <div><strong>Added by:</strong> {{.Expense.CreatedByName}}</div>
+      {{end}}
+      {{if .Splits}}
+      <div>
+        <strong>Split:</strong>
+        {{range $i, $sp := .Splits}}{{if $i}}, {{end}}{{$sp.UserName}} ({{formatMoney $sp.ShareCents}}){{end}}
+      </div>
+      {{end}}
+      {{if .Expense.Note}}
+      <div><strong>Note:</strong> {{.Expense.Note}}</div>
+      {{end}}
+    </div>
+
+    <details>
+      <summary class="btn btn-danger btn-sm">Delete expense</summary>
+      <div class="panel panel-danger" style="margin-top: 0.5rem;">
+        <p style="margin: 0 0 0.5rem;">Permanently delete this {{if eq .Expense.Kind "refund"}}refund{{else}}expense{{end}}?</p>
+        <form method="POST" action="/expenses/{{.Expense.ID}}/delete">
+          <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+          <button type="submit" class="btn btn-danger btn-sm">Confirm delete</button>
+        </form>
+      </div>
+    </details>
+  </div>
+</div>
+{{end}}

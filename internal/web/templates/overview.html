@@ -1,0 +1,222 @@
+{{define "content"}}
+<section class="overview-hero" aria-labelledby="overview-heading">
+  <div class="period-row">
+    <div>
+      <h1 id="overview-heading">{{.PeriodTitle}}</h1>
+      <div class="period-label">{{.PeriodSubtitle}}</div>
+    </div>
+    <div class="month-switcher">
+      <a class="btn btn-secondary btn-sm" href="/?month={{.PrevMonth}}" aria-label="Previous month">Prev</a>
+      <a class="btn btn-secondary btn-sm" href="/?month={{.CurrentMonth}}">This month</a>
+      <a class="btn btn-secondary btn-sm" href="/?month={{.NextMonth}}" aria-label="Next month">Next</a>
+    </div>
+  </div>
+
+  <p class="total-figure num" aria-label="Confirmed spending total">{{.TotalFormatted}}</p>
+
+  <div class="split-meta">
+    <span>Cash: <strong class="num">{{.CashFormatted}}</strong></span>
+    <span>Card: <strong class="num">{{.CardFormatted}}</strong></span>
+    <span>Entries: <strong class="num">{{.Summary.ExpenseCount}}</strong></span>
+  </div>
+
+  <div class="action-row">
+    <a class="btn btn-primary" href="/scan">Scan receipt</a>
+    <a class="btn btn-secondary" href="/expenses/new">Add expense</a>
+    {{if gt .ReviewCount 0}}
+    <a class="btn btn-secondary" href="/inbox">Needs review ({{.ReviewCount}})</a>
+    {{end}}
+  </div>
+
+  {{if gt .DueSoonCount 0}}
+  <div class="panel panel-warn" style="margin-top: 0.875rem; margin-bottom: 0;" role="status">
+    <strong>{{.DueSoonCount}} subscription renewal(s)</strong> overdue or due in the next 7 days. <a href="/subscriptions">Review renewals</a>
+  </div>
+  {{end}}
+
+  <details style="margin-top: 0.75rem;">
+    <summary class="muted">Choose month or date range</summary>
+    <form class="filter-form" method="GET" action="/" style="margin-top: 0.5rem;">
+      <div class="field">
+        <label for="ov-from">From</label>
+        <input id="ov-from" type="date" name="from" value="{{.FromDate}}">
+      </div>
+      <div class="field">
+        <label for="ov-to">To</label>
+        <input id="ov-to" type="date" name="to" value="{{.ToDate}}">
+      </div>
+      <div class="filter-actions">
+        <button type="submit" class="btn btn-secondary btn-sm">Apply range</button>
+      </div>
+    </form>
+  </details>
+</section>
+
+<div class="overview-grid">
+  <div>
+    <section class="section-block" aria-labelledby="recent-heading">
+      <div class="section-head">
+        <h2 id="recent-heading">Recent expenses</h2>
+        <a href="/ledger?from={{.FromDate}}&to={{.ToDate}}">View all</a>
+      </div>
+
+      {{if .Summary.RecentExpenses}}
+      <div class="ledger-table-wrap">
+        <table class="ledger-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Merchant</th>
+              <th>Category</th>
+              <th>Method</th>
+              <th>Paid by</th>
+              <th class="num">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{range .Summary.RecentExpenses}}
+            <tr>
+              <td class="num">{{formatDate .PurchaseDate}}</td>
+              <td class="merchant-cell">
+                <a href="/expenses/{{.ID}}">{{.Merchant}}</a>
+                {{if eq .Kind "refund"}}<span class="badge">Refund</span>{{end}}
+                {{if .ReceiptImageID}}<span class="badge">Receipt</span>{{end}}
+              </td>
+              <td>{{.CategoryName}}</td>
+              <td>{{paymentLabel .PaymentMethod}}</td>
+              <td>{{if .PaidByName}}{{.PaidByName}}{{else if .CreatedByName}}{{.CreatedByName}}{{else}}—{{end}}</td>
+              <td class="num {{if eq .Kind "refund"}}refund-amount{{end}}">
+                {{if eq .Kind "refund"}}-{{end}}{{formatMoney .AmountCents}}
+              </td>
+            </tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="ledger-mobile-list">
+        <ul class="mobile-tx-list">
+          {{range .Summary.RecentExpenses}}
+          <li class="mobile-tx-item">
+            <a class="mobile-tx-link" href="/expenses/{{.ID}}">
+              <div>
+                <div class="merchant-cell">{{.Merchant}}</div>
+                <div class="mobile-tx-meta">
+                  {{formatDate .PurchaseDate}} · {{.CategoryName}} · {{paymentLabel .PaymentMethod}}
+                  {{if .PaidByName}}· Paid by {{.PaidByName}}{{else if .CreatedByName}}· {{.CreatedByName}}{{end}}
+                  {{if eq .Kind "refund"}}· Refund{{end}}
+                </div>
+              </div>
+              <div class="mobile-tx-amount num {{if eq .Kind "refund"}}refund-amount{{end}}">
+                {{if eq .Kind "refund"}}-{{end}}{{formatMoney .AmountCents}}
+              </div>
+            </a>
+          </li>
+          {{end}}
+        </ul>
+      </div>
+      {{else}}
+      <div class="empty-state">
+        <p class="muted">No expenses yet for this period.</p>
+        <a class="btn btn-secondary btn-sm" href="/expenses/new">Add expense</a>
+      </div>
+      {{end}}
+    </section>
+
+    <section class="section-block" aria-labelledby="trend-heading">
+      <h2 id="trend-heading">Monthly trend</h2>
+      <ul class="trend-list">
+        {{range .TrendRows}}
+        <li class="trend-item">
+          <a href="/?month={{.Month}}">{{.MonthLabel}}</a>
+          <div class="cat-bar-track" aria-hidden="true">
+            <div class="cat-bar-fill" style="width: {{printf "%.1f" .BarPercent}}%;"></div>
+          </div>
+          <span class="num">{{.TotalFormatted}}</span>
+        </li>
+        {{end}}
+      </ul>
+    </section>
+  </div>
+
+  <aside aria-label="Breakdown and upcoming renewals">
+    <section class="section-block" aria-labelledby="cat-heading">
+      <h2 id="cat-heading">Where money went</h2>
+      {{if .CategoryRows}}
+      <ul class="cat-list">
+        {{range .CategoryRows}}
+        <li class="cat-item">
+          <a class="cat-link" href="/ledger?from={{$.FromDate}}&to={{$.ToDate}}&category={{.CategoryID}}">
+            <div class="cat-row">
+              <span>{{.CategoryName}}</span>
+              <strong class="num">{{.TotalFormatted}}</strong>
+            </div>
+            <div class="cat-bar-track" aria-hidden="true">
+              <div class="cat-bar-fill" style="width: {{printf "%.1f" .SharePercent}}%;"></div>
+            </div>
+            {{if .BudgetText}}
+            <div class="field-hint" {{if .BudgetOver}}style="color: var(--danger); font-weight: 600;"{{end}}>{{.BudgetText}}</div>
+            {{end}}
+          </a>
+        </li>
+        {{end}}
+      </ul>
+      {{else}}
+      <p class="muted">No category totals for this period.</p>
+      {{end}}
+
+      <details style="margin-top: 0.5rem;">
+        <summary class="muted">Set category budget</summary>
+        <form class="form-stack" method="POST" action="/budgets" style="margin-top: 0.5rem;">
+          <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+          <div class="inline-confirm-fields">
+            <div class="field">
+              <label for="b-cat">Category</label>
+              <select id="b-cat" name="category_id">
+                {{range .Categories}}
+                <option value="{{.ID}}">{{.Name}}</option>
+                {{end}}
+              </select>
+            </div>
+            <div class="field">
+              <label for="b-limit">Monthly limit ({{.Currency}})</label>
+              <input id="b-limit" name="monthly_limit" type="text" inputmode="decimal" placeholder="200,00 (0 to clear)">
+            </div>
+          </div>
+          <button type="submit" class="btn btn-secondary btn-sm">Save budget</button>
+        </form>
+      </details>
+    </section>
+
+    <section class="section-block" aria-labelledby="upcoming-heading">
+      <div class="section-head">
+        <h2 id="upcoming-heading">Upcoming renewals</h2>
+        <a href="/subscriptions">Manage</a>
+      </div>
+      <p class="field-hint">Separate from confirmed spending. Estimated monthly subscription cost: <strong class="num">{{.EstMonthlySubFormatted}}</strong> (monthly + annual / 12).</p>
+      {{if .UpcomingSubs}}
+      <ul class="sub-list">
+        {{range .UpcomingSubs}}
+        <li class="sub-item">
+          <div class="sub-top">
+            <span class="sub-name">{{.Name}}</span>
+            <span class="sub-price num">{{formatMoney .AmountCents}}</span>
+          </div>
+          <div class="sub-meta">
+            {{formatDate .NextDueDate}} · {{.Frequency}}
+            {{if eq .Frequency "yearly"}}<span class="badge">Annual renewal</span>{{end}}
+            {{if .IsOverdue}}<span class="badge badge-overdue">Overdue</span>
+            {{else if .IsDueToday}}<span class="badge badge-due">Due today</span>
+            {{else if .IsWithin7}}<span class="badge badge-due">{{.DueLabel}}</span>
+            {{else if .IsWithin30}}<span class="badge">{{.DueLabel}}</span>{{end}}
+          </div>
+        </li>
+        {{end}}
+      </ul>
+      {{else}}
+      <p class="muted">No active subscriptions scheduled.</p>
+      {{end}}
+    </section>
+  </aside>
+</div>
+{{end}}

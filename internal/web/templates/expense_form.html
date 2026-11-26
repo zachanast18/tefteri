@@ -1,0 +1,213 @@
+{{define "content"}}
+<div class="page-head">
+  <h1>{{.Heading}}</h1>
+  {{if .CancelURL}}
+  <a class="btn btn-secondary btn-sm" href="{{.CancelURL}}">Cancel</a>
+  {{end}}
+</div>
+
+{{if .OCRNotice}}
+<div class="panel panel-warn" role="status">{{.OCRNotice}}</div>
+{{end}}
+
+{{if .FormError}}
+<div class="panel panel-danger" role="alert">{{.FormError}}</div>
+{{end}}
+
+{{if .Duplicates}}
+<div class="panel panel-warn" role="alert">
+  <p style="margin: 0 0 0.5rem;"><strong>Possible duplicate detected.</strong></p>
+  <ul style="margin: 0 0 0.75rem; padding-left: 1.25rem;">
+    {{range .Duplicates}}
+    <li>
+      {{if eq .MatchReason "exact_image"}}Exact same receipt image{{else}}Matching merchant, date, and amount{{end}}:
+      <a href="/expenses/{{.ExpenseID}}">{{formatDate .PurchaseDate}} — {{.Merchant}} ({{formatMoney .AmountCents}}, {{paymentLabel .PaymentMethod}})</a>
+    </li>
+    {{end}}
+  </ul>
+  <p class="field-hint" style="margin: 0;">Check "Save anyway" below if this is a separate purchase.</p>
+</div>
+{{end}}
+
+<div class="review-layout">
+  {{if .ReceiptImageID}}
+  <div class="review-receipt-desktop panel">
+    <h2 style="margin-bottom: 0.5rem;">Receipt photo</h2>
+    <img src="/receipts/{{.ReceiptImageID}}" alt="Uploaded receipt photo">
+  </div>
+  {{end}}
+
+  <div class="review-form-col">
+    <form class="form-stack" method="POST" action="{{.ActionURL}}" {{if not .IsEdit}}enctype="multipart/form-data"{{end}} data-prevent-double-submit>
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      <input type="hidden" name="submission_token" value="{{.SubmissionToken}}">
+      <input type="hidden" name="draft_id" value="{{.DraftID}}">
+      <input type="hidden" name="receipt_image_id" value="{{.ReceiptImageID}}">
+
+      {{if .ReceiptImageID}}
+      <div class="receipt-thumb-mobile">
+        <img src="/receipts/{{.ReceiptImageID}}" alt="Receipt thumbnail">
+        <div>
+          <div style="font-weight: 600;">Receipt attached</div>
+          <div style="display: flex; gap: 0.5rem; margin-top: 0.25rem;">
+            <button type="button" class="btn btn-secondary btn-sm" data-open-dialog="receipt-zoom-dialog">View larger</button>
+            <noscript><a class="btn btn-secondary btn-sm" href="/receipts/{{.ReceiptImageID}}" target="_blank" rel="noopener">Open</a></noscript>
+          </div>
+        </div>
+      </div>
+      {{end}}
+
+      <div class="field">
+        <label for="amount">Amount ({{.Currency}})</label>
+        {{if .CheckAmount}}<span class="field-check-prompt">Check amount</span>{{end}}
+        <input id="amount" name="amount" type="text" inputmode="decimal" class="input-amount" required value="{{.Amount}}" placeholder="0,00" autocomplete="off">
+        {{with index .Errors "amount"}}<span class="field-error">{{.}}</span>{{end}}
+      </div>
+
+      <div class="field">
+        <label for="merchant">Merchant</label>
+        {{if .CheckMerchant}}<span class="field-check-prompt">Check merchant</span>{{end}}
+        <input id="merchant" name="merchant" type="text" required value="{{.Merchant}}" placeholder="e.g. ΣΚΛΑΒΕΝΙΤΗΣ">
+        {{with index .Errors "merchant"}}<span class="field-error">{{.}}</span>{{end}}
+      </div>
+
+      <div class="field">
+        <label for="purchase_date">Date</label>
+        {{if .CheckDate}}<span class="field-check-prompt">Check date</span>{{end}}
+        <input id="purchase_date" name="purchase_date" type="date" required value="{{.PurchaseDate}}">
+        {{with index .Errors "purchase_date"}}<span class="field-error">{{.}}</span>{{end}}
+      </div>
+
+      <fieldset class="field radio-group">
+        <legend>Payment method</legend>
+        <div class="radio-row">
+          <label class="radio-choice">
+            <input type="radio" name="payment_method" value="cash" {{if eq .PaymentMethod "cash"}}checked{{end}} required>
+            <span>Cash</span>
+          </label>
+          <label class="radio-choice">
+            <input type="radio" name="payment_method" value="card" {{if eq .PaymentMethod "card"}}checked{{end}} required>
+            <span>Card</span>
+          </label>
+        </div>
+        {{with index .Errors "payment_method"}}<span class="field-error">{{.}}</span>{{end}}
+      </fieldset>
+
+      <div class="field">
+        <label for="category_id">Category</label>
+        <select id="category_id" name="category_id" required>
+          {{range .Categories}}
+          <option value="{{.ID}}" {{if eq .ID $.CategoryID}}selected{{end}}>{{.Name}}</option>
+          {{end}}
+        </select>
+        {{if .SuggestReason}}
+        <span class="field-hint">{{.SuggestReason}}</span>
+        {{end}}
+        {{with index .Errors "category_id"}}<span class="field-error">{{.}}</span>{{end}}
+      </div>
+
+      <label class="checkbox-row">
+        <input id="remember_merchant" type="checkbox" name="remember_merchant" value="1" {{if .RememberMerchant}}checked{{end}}>
+        <span>Remember this category for this merchant</span>
+      </label>
+
+      {{if .Members}}
+      <div class="field">
+        <label for="paid_by_user_id">Paid by</label>
+        <select id="paid_by_user_id" name="paid_by_user_id">
+          {{range .Members}}
+          <option value="{{.UserID}}" {{if eq .UserID $.PaidByUserID}}selected{{end}}>{{.Label}}</option>
+          {{end}}
+        </select>
+      </div>
+
+      <details {{if or (ne .SplitMode "none") (index .Errors "splits")}}open{{end}}>
+        <summary>Split between members (optional)</summary>
+        <div class="panel form-stack" style="margin-top: 0.5rem;">
+          {{with index .Errors "splits"}}<span class="field-error">{{.}}</span>{{end}}
+          <div class="radio-row" style="grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));">
+            <label class="radio-choice">
+              <input type="radio" name="split_mode" value="none" {{if eq .SplitMode "none"}}checked{{end}}>
+              <span>No split</span>
+            </label>
+            <label class="radio-choice">
+              <input type="radio" name="split_mode" value="equal" {{if eq .SplitMode "equal"}}checked{{end}}>
+              <span>Split equally</span>
+            </label>
+            <label class="radio-choice">
+              <input type="radio" name="split_mode" value="custom" {{if eq .SplitMode "custom"}}checked{{end}}>
+              <span>Custom amounts</span>
+            </label>
+          </div>
+          <div class="field-hint">For equal split, check who shares this expense. For custom amounts, enter each member's share ({{.Currency}}).</div>
+          <div style="display: grid; gap: 0.5rem;">
+            {{range .Members}}
+            <div style="display: grid; grid-template-columns: 1fr 120px; gap: 0.5rem; align-items: center;">
+              <label class="checkbox-row" style="min-height: 38px;">
+                <input type="checkbox" name="split_users" value="{{.UserID}}" {{if index $.SplitSelected .UserID}}checked{{end}}>
+                <span>{{.Label}}</span>
+              </label>
+              <input type="text" inputmode="decimal" name="custom_split_{{.UserID}}" value="{{index $.CustomSplits .UserID}}" placeholder="0,00" aria-label="Custom split for {{.Label}}" style="min-height: 38px;">
+            </div>
+            {{end}}
+          </div>
+        </div>
+      </details>
+      {{end}}
+
+      <fieldset class="field radio-group">
+        <legend>Entry type</legend>
+        <div class="radio-row">
+          <label class="radio-choice">
+            <input type="radio" name="kind" value="expense" {{if ne .Kind "refund"}}checked{{end}}>
+            <span>Expense</span>
+          </label>
+          <label class="radio-choice">
+            <input type="radio" name="kind" value="refund" {{if eq .Kind "refund"}}checked{{end}}>
+            <span>Refund</span>
+          </label>
+        </div>
+      </fieldset>
+
+      <div class="field">
+        <label for="note">Note (optional)</label>
+        <input id="note" name="note" type="text" value="{{.Note}}" placeholder="Optional details">
+      </div>
+
+      {{if and (not .IsEdit) (not .ReceiptImageID)}}
+      <div class="field">
+        <label for="attachment">Receipt photo (optional)</label>
+        <input id="attachment" name="attachment" type="file" accept="image/jpeg,image/png,image/*" capture="environment">
+      </div>
+      {{end}}
+
+      {{if .Duplicates}}
+      <label class="checkbox-row">
+        <input type="checkbox" name="confirm_duplicate" value="1" {{if .ConfirmDuplicate}}checked{{end}}>
+        <span>Save anyway despite duplicate warning</span>
+      </label>
+      {{end}}
+
+      <div class="action-row">
+        <button type="submit" name="save_action" value="save" class="btn btn-primary">{{.SubmitLabel}}</button>
+        {{if .DraftID}}
+        <button type="submit" name="save_action" value="draft" formnovalidate class="btn btn-secondary">Save to review inbox</button>
+        {{end}}
+        {{if .CancelURL}}
+        <a class="btn btn-secondary" href="{{.CancelURL}}">Cancel</a>
+        {{end}}
+      </div>
+    </form>
+  </div>
+</div>
+
+{{if .ReceiptImageID}}
+<dialog id="receipt-zoom-dialog" class="receipt-dialog" aria-label="Receipt photo">
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+    <strong>Receipt photo</strong>
+    <button type="button" class="btn btn-secondary btn-sm" data-close-dialog>Close</button>
+  </div>
+  <img src="/receipts/{{.ReceiptImageID}}" alt="Full-size receipt photo">
+</dialog>
+{{end}}
+{{end}}

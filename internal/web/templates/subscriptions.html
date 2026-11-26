@@ -1,0 +1,225 @@
+{{define "content"}}
+<div class="page-head">
+  <h1>Subscriptions</h1>
+  <div class="muted" style="font-size: 0.9375rem;">
+    Estimated monthly cost: <strong class="num">{{.EstMonthlyFormatted}}</strong> (estimate: monthly + annual / 12)
+  </div>
+</div>
+
+{{if .Error}}
+<div class="panel panel-danger" role="alert">{{.Error}}</div>
+{{end}}
+
+{{if .EditSub}}
+<section class="panel" style="margin-bottom: 1.5rem;" aria-labelledby="edit-sub-heading">
+  <div class="section-head">
+    <h2 id="edit-sub-heading">Edit subscription</h2>
+    <a class="btn btn-secondary btn-sm" href="/subscriptions">Cancel</a>
+  </div>
+  <p class="field-hint">Schedule edits apply to future renewals and preserve paid history.</p>
+  <form class="form-stack" method="POST" action="/subscriptions/{{.EditSub.ID}}/edit">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <div class="inline-confirm-fields">
+      <div class="field">
+        <label for="es-name">Name / Merchant</label>
+        <input id="es-name" name="name" type="text" required value="{{.EditSub.Name}}">
+      </div>
+      <div class="field">
+        <label for="es-amount">Amount ({{.Currency}})</label>
+        <input id="es-amount" name="amount" type="text" inputmode="decimal" required value="{{formatInputMoney .EditSub.AmountCents}}">
+      </div>
+      <div class="field">
+        <label for="es-freq">Frequency</label>
+        <select id="es-freq" name="frequency">
+          <option value="monthly" {{if eq .EditSub.Frequency "monthly"}}selected{{end}}>Monthly</option>
+          <option value="yearly" {{if eq .EditSub.Frequency "yearly"}}selected{{end}}>Yearly</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="es-due">Next renewal date</label>
+        <input id="es-due" name="next_due_date" type="date" required value="{{.EditSub.NextDueDate}}">
+      </div>
+      <div class="field">
+        <label for="es-cat">Category</label>
+        <select id="es-cat" name="category_id">
+          {{range .Categories}}
+          <option value="{{.ID}}" {{if eq .ID $.EditSub.CategoryID}}selected{{end}}>{{.Name}}</option>
+          {{end}}
+        </select>
+      </div>
+      <div class="field">
+        <label for="es-pay">Payment method</label>
+        <select id="es-pay" name="payment_method">
+          <option value="card" {{if eq .EditSub.PaymentMethod "card"}}selected{{end}}>Card</option>
+          <option value="cash" {{if eq .EditSub.PaymentMethod "cash"}}selected{{end}}>Cash</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="es-status">Status</label>
+        <select id="es-status" name="status">
+          <option value="active" {{if eq .EditSub.Status "active"}}selected{{end}}>Active</option>
+          <option value="paused" {{if eq .EditSub.Status "paused"}}selected{{end}}>Paused</option>
+        </select>
+      </div>
+    </div>
+    <div class="action-row">
+      <button type="submit" class="btn btn-primary btn-sm">Save schedule</button>
+    </div>
+  </form>
+</section>
+{{end}}
+
+<section class="section-block" aria-labelledby="renewals-heading">
+  <h2 id="renewals-heading">Renewals</h2>
+  {{if .Subscriptions}}
+  <ul class="sub-list">
+    {{range .Subscriptions}}
+    <li class="sub-item">
+      <div class="sub-top">
+        <div>
+          <span class="sub-name">{{.Name}}</span>
+          {{if eq .Status "paused"}}
+            <span class="badge">Paused</span>
+          {{else if .IsOverdue}}
+            <span class="badge badge-overdue">Overdue</span>
+          {{else if .IsDueToday}}
+            <span class="badge badge-due">Due today</span>
+          {{else}}
+            <span class="badge badge-active">Active</span>
+          {{end}}
+        </div>
+        <span class="sub-price num">{{formatMoney .AmountCents}}</span>
+      </div>
+
+      <div class="sub-meta">
+        Next renewal: <strong class="num">{{formatDate .NextDueDate}}</strong> · {{.Frequency}} · {{.CategoryName}} · {{paymentLabel .PaymentMethod}}
+      </div>
+
+      <div class="sub-actions">
+        {{if eq .Status "active"}}
+        <details>
+          <summary class="btn btn-primary btn-sm">Confirm paid</summary>
+          <form class="inline-confirm" method="POST" action="/subscriptions/{{.ID}}/confirm">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <input type="hidden" name="scheduled_date" value="{{.NextDueDate}}">
+            <div class="inline-confirm-fields">
+              <div class="field">
+                <label for="pa-{{.ID}}">Paid amount ({{$.Currency}})</label>
+                <input id="pa-{{.ID}}" name="paid_amount" type="text" inputmode="decimal" value="{{formatInputMoney .AmountCents}}" required>
+              </div>
+              <div class="field">
+                <label for="pd-{{.ID}}">Paid date</label>
+                <input id="pd-{{.ID}}" name="paid_date" type="date" value="{{.NextDueDate}}" required>
+              </div>
+            </div>
+            <button type="submit" class="btn btn-primary btn-sm">Record payment</button>
+          </form>
+        </details>
+
+        <form method="POST" action="/subscriptions/{{.ID}}/skip">
+          <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+          <input type="hidden" name="scheduled_date" value="{{.NextDueDate}}">
+          <button type="submit" class="btn btn-secondary btn-sm">Skip this renewal</button>
+        </form>
+
+        <form method="POST" action="/subscriptions/{{.ID}}/status">
+          <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+          <input type="hidden" name="status" value="paused">
+          <button type="submit" class="btn btn-secondary btn-sm">Pause subscription</button>
+        </form>
+        {{else}}
+        <form method="POST" action="/subscriptions/{{.ID}}/status">
+          <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+          <input type="hidden" name="status" value="active">
+          <button type="submit" class="btn btn-secondary btn-sm">Resume subscription</button>
+        </form>
+        {{end}}
+
+        <a class="btn btn-secondary btn-sm" href="/subscriptions?edit={{.ID}}">Edit</a>
+      </div>
+    </li>
+    {{end}}
+  </ul>
+  {{else}}
+  <p class="muted">No subscriptions yet.</p>
+  {{end}}
+</section>
+
+<details style="margin-bottom: 1.5rem;" {{if not .Subscriptions}}open{{end}}>
+  <summary>Add subscription</summary>
+  <form class="panel form-stack" method="POST" action="/subscriptions" style="margin-top: 0.5rem;">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <div class="inline-confirm-fields">
+      <div class="field">
+        <label for="ns-name">Name / Merchant</label>
+        <input id="ns-name" name="name" type="text" required placeholder="e.g. Cosmote Fiber">
+      </div>
+      <div class="field">
+        <label for="ns-amount">Amount ({{.Currency}})</label>
+        <input id="ns-amount" name="amount" type="text" inputmode="decimal" required placeholder="32,90">
+      </div>
+      <div class="field">
+        <label for="ns-freq">Frequency</label>
+        <select id="ns-freq" name="frequency">
+          <option value="monthly">Monthly</option>
+          <option value="yearly">Yearly</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="ns-first">First renewal date</label>
+        <input id="ns-first" name="first_renewal_date" type="date" required value="{{.Today}}">
+      </div>
+      <div class="field">
+        <label for="ns-cat">Category</label>
+        <select id="ns-cat" name="category_id">
+          {{range .Categories}}
+          <option value="{{.ID}}">{{.Name}}</option>
+          {{end}}
+        </select>
+      </div>
+      <div class="field">
+        <label for="ns-pay">Payment method</label>
+        <select id="ns-pay" name="payment_method">
+          <option value="card">Card</option>
+          <option value="cash">Cash</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="ns-status">Status</label>
+        <select id="ns-status" name="status">
+          <option value="active">Active</option>
+          <option value="paused">Paused</option>
+        </select>
+      </div>
+    </div>
+    <div>
+      <button type="submit" class="btn btn-primary">Add subscription</button>
+    </div>
+  </form>
+</details>
+
+{{if .Occurrences}}
+<section class="section-block" aria-labelledby="history-heading">
+  <h2 id="history-heading">Recent renewal history</h2>
+  <ul class="sub-list">
+    {{range .Occurrences}}
+    <li class="sub-item" style="padding: 0.5rem 0;">
+      <div class="sub-top">
+        <span><strong>{{.SubName}}</strong> · Scheduled <span class="num">{{formatDate .ScheduledDate}}</span></span>
+        <span>
+          {{if eq .Status "paid"}}
+            <span class="badge badge-active">Paid</span>
+            {{if .PaidAmountCents}}<span class="num">{{formatMoneyPtr .PaidAmountCents}}</span>{{end}}
+            {{if .ConfirmedByName}} · by {{.ConfirmedByName}}{{end}}
+            {{if .ExpenseID}} · <a href="/expenses/{{.ExpenseID}}">Expense</a>{{end}}
+          {{else}}
+            <span class="badge">Skipped</span>
+          {{end}}
+        </span>
+      </div>
+    </li>
+    {{end}}
+  </ul>
+</section>
+{{end}}
+{{end}}

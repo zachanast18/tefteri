@@ -1,0 +1,26 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${APP_PORT:-8080}:8080"
+    environment:
+      APP_CURRENCY: "${APP_CURRENCY:-EUR}"
+      APP_CURRENCY_SYMBOL: "${APP_CURRENCY_SYMBOL:-€}"
+      APP_TIMEZONE: "${APP_TIMEZONE:-Europe/Athens}"
+      OCR_LANGUAGES: "${OCR_LANGUAGES:-ell+eng}"
+      OCR_TIMEOUT_SECONDS: "${OCR_TIMEOUT_SECONDS:-25}"
+      COOKIE_SECURE: "${COOKIE_SECURE:-auto}"
+    volumes:
+      - ledger_data:/data
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/ledger", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  ledger_data:

@@ -1,0 +1,152 @@
+{{define "content"}}
+<div class="page-head">
+  <h1>Ledger</h1>
+  <div class="filter-actions">
+    <a class="btn btn-primary btn-sm" href="/scan">Scan receipt</a>
+    <a class="btn btn-secondary btn-sm" href="/expenses/new">Add expense</a>
+    <a class="btn btn-secondary btn-sm" href="/ledger/export.csv?{{.FilterQuery}}">Export CSV</a>
+  </div>
+</div>
+
+<form class="filter-form" method="GET" action="/ledger">
+  <div class="field">
+    <label for="f-from">From</label>
+    <input id="f-from" type="date" name="from" value="{{.Filter.FromDate}}">
+  </div>
+  <div class="field">
+    <label for="f-to">To</label>
+    <input id="f-to" type="date" name="to" value="{{.Filter.ToDate}}">
+  </div>
+  <div class="field">
+    <label for="f-merchant">Merchant</label>
+    <input id="f-merchant" type="search" name="merchant" value="{{.Filter.Merchant}}" placeholder="Search merchant">
+  </div>
+  <div class="field">
+    <label for="f-cat">Category</label>
+    <select id="f-cat" name="category">
+      <option value="">All categories</option>
+      {{range .Categories}}
+      <option value="{{.ID}}" {{if eq .ID $.Filter.CategoryID}}selected{{end}}>{{.Name}}</option>
+      {{end}}
+    </select>
+  </div>
+  <div class="field">
+    <label for="f-pay">Payment</label>
+    <select id="f-pay" name="payment">
+      <option value="">All</option>
+      <option value="cash" {{if eq .Filter.PaymentMethod "cash"}}selected{{end}}>Cash</option>
+      <option value="card" {{if eq .Filter.PaymentMethod "card"}}selected{{end}}>Card</option>
+    </select>
+  </div>
+  <div class="field">
+    <label for="f-user">Member</label>
+    <select id="f-user" name="user">
+      <option value="">All members</option>
+      {{range .Users}}
+      <option value="{{.UserID}}" {{if eq .UserID $.Filter.UserID}}selected{{end}}>{{.Label}}</option>
+      {{end}}
+    </select>
+  </div>
+  <div class="filter-actions">
+    <button type="submit" class="btn btn-secondary btn-sm">Filter</button>
+    {{if .HasActiveFilters}}
+    <a class="btn btn-secondary btn-sm" href="/ledger">Clear filters</a>
+    {{end}}
+  </div>
+</form>
+
+{{if .Expenses}}
+<p class="muted" style="margin: 0 0 0.75rem; font-size: 0.875rem;">
+  Showing <strong class="num">{{len .Expenses}}</strong> entries · Net total: <strong class="num">{{.FilteredTotalFormatted}}</strong>
+</p>
+
+<div class="ledger-table-wrap">
+  <table class="ledger-table">
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Merchant</th>
+        <th>Category</th>
+        <th>Method</th>
+        <th>Paid by</th>
+        <th>Source</th>
+        <th class="num">Amount</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Expenses}}
+      <tr>
+        <td class="num">{{formatDate .PurchaseDate}}</td>
+        <td class="merchant-cell">
+          <a href="/expenses/{{.ID}}">{{.Merchant}}</a>
+          {{if eq .Kind "refund"}}<span class="badge">Refund</span>{{end}}
+          {{if .ReceiptImageID}}<span class="badge">Receipt</span>{{end}}
+          {{if .Note}}<div class="row-note">{{.Note}}</div>{{end}}
+        </td>
+        <td>{{.CategoryName}}</td>
+        <td>{{paymentLabel .PaymentMethod}}</td>
+        <td>{{if .PaidByName}}{{.PaidByName}}{{else if .CreatedByName}}{{.CreatedByName}}{{else}}—{{end}}</td>
+        <td>{{.Source}}</td>
+        <td class="num {{if eq .Kind "refund"}}refund-amount{{end}}">
+          {{if eq .Kind "refund"}}-{{end}}{{formatMoney .AmountCents}}
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div class="ledger-mobile-list">
+  {{range .DayGroups}}
+  <section class="mobile-day-group">
+    <h2 class="mobile-day-heading">{{formatDate .Date}}</h2>
+    <ul class="mobile-tx-list">
+      {{range .Items}}
+      <li class="mobile-tx-item">
+        <a class="mobile-tx-link" href="/expenses/{{.ID}}">
+          <div>
+            <div class="merchant-cell">{{.Merchant}}</div>
+            <div class="mobile-tx-meta">
+              {{.CategoryName}} · {{paymentLabel .PaymentMethod}}
+              {{if .PaidByName}}· Paid by {{.PaidByName}}{{else if .CreatedByName}}· {{.CreatedByName}}{{end}}
+              {{if eq .Kind "refund"}}· Refund{{end}}
+              {{if .ReceiptImageID}}· Receipt{{end}}
+            </div>
+          </div>
+          <div class="mobile-tx-amount num {{if eq .Kind "refund"}}refund-amount{{end}}">
+            {{if eq .Kind "refund"}}-{{end}}{{formatMoney .AmountCents}}
+          </div>
+        </a>
+      </li>
+      {{end}}
+    </ul>
+  </section>
+  {{end}}
+</div>
+
+{{else}}
+<div class="empty-state">
+  {{if .HasAnyExpenses}}
+  <p class="muted">No results for these filters.</p>
+  <a class="btn btn-secondary btn-sm" href="/ledger">Clear filters</a>
+  {{else}}
+  <p class="muted">No expenses yet.</p>
+  <a class="btn btn-primary btn-sm" href="/expenses/new">Add expense</a>
+  {{end}}
+</div>
+{{end}}
+
+<details style="margin-top: 2rem;">
+  <summary class="muted">Add custom category</summary>
+  <form class="filter-form" method="POST" action="/categories" style="margin-top: 0.5rem; border-bottom: 0;">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <div class="field">
+      <label for="new-cat-name">Category name</label>
+      <input id="new-cat-name" type="text" name="name" required placeholder="e.g. Pets">
+    </div>
+    <div class="filter-actions">
+      <button type="submit" class="btn btn-secondary btn-sm">Add category</button>
+    </div>
+  </form>
+</details>
+{{end}}

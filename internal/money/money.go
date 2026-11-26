@@ -1,0 +1,214 @@
+package money
+
+import (
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+	"unicode"
+)
+
+var (
+	ErrInvalidAmount = errors.New("enter a valid amount such as 12,50 or 1.234,56")
+	ErrNonPositive   = errors.New("amount must be greater than zero")
+)
+
+// ParsePositive parses a user-entered or OCR-extracted monetary string into
+// positive integer minor units (cents). It supports European comma decimals
+// ("1.234,56", "45,80") as well as dot decimals ("1,234.56", "45.80").
+func ParsePositive(raw string) (int64, error) {
+	cents, err := Parse(raw)
+	if err != nil {
+		return 0, err
+	}
+	if cents <= 0 {
+		return 0, ErrNonPositive
+	}
+	return cents, nil
+}
+
+// Parse parses a monetary string into integer minor units (cents).
+func Parse(raw string) (int64, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return 0, ErrInvalidAmount
+	}
+
+	// Strip common currency markers and whitespace.
+	replacer := strings.NewReplacer(
+		"€", "", "$", "", "£", "",
+		"EUR", "", "eur", "", "USD", "", "usd", "", "GBP", "", "gbp", "",
+		"ΕΥΡΩ", "", "ευρω", "",
+		"\u00a0", "", " ", "",
+	)
+	s = replacer.Replace(s)
+	if s == "" {
+		return 0, ErrInvalidAmount
+	}
+
+	neg := false
+	if strings.HasPrefix(s, "-") {
+		neg = true
+		s = strings.TrimPrefix(s, "-")
+	} else if strings.HasPrefix(s, "+") {
+		s = strings.TrimPrefix(s, "+")
+	}
+
+	if s == "" {
+		return 0, ErrInvalidAmount
+	}
+
+	// Validate characters: only digits, '.', ','
+	for _, r := range s {
+		if !unicode.IsDigit(r) && r != '.' && r != ',' {
+			return 0, ErrInvalidAmount
+		}
+	}
+
+	lastComma := strings.LastIndexByte(s, ',')
+	lastDot := strings.LastIndexByte(s, '.')
+
+	var intPart, fracPart string
+
+	switch {
+	case lastComma >= 0 && lastDot >= 0:
+		// Both separators present: whichever appears last is the decimal separator.
+		if lastComma > lastDot {
+			intPart = strings.ReplaceAll(s[:lastComma], ".", "")
+			intPart = strings.ReplaceAll(intPart, ",", "")
+			fracPart = s[lastComma+1:]
+		} else {
+			intPart = strings.ReplaceAll(s[:lastDot], ",", "")
+			intPart = strings.ReplaceAll(intPart, ".", "")
+			fracPart = s[lastDot+1:]
+		}
+	case lastComma >= 0:
+		// Only comma(s). If multiple commas or 3 trailing digits after single comma, check.
+		if strings.Count(s, ",") > 1 {
+			intPart = strings.ReplaceAll(s, ",", "")
+		} else {
+			after := s[lastComma+1:]
+			if len(after) == 3 && len(s[:lastComma]) >= 1 {
+				// Ambiguous e.g. 1,234 -> treat as thousands if 3 digits? Wait: in EUR locale
+				// comma is decimal, but 1,234 has 3 digits; reject >2 decimal digits unless thousands.
+				// Actually, treat 3 digits after comma when no dot as invalid/ambiguous or thousands:
+				// Let's treat 1-2 digits as decimal; 3 digits as thousands separator.
+				intPart = strings.ReplaceAll(s, ",", "")
+			} else {
+				intPart = s[:lastComma]
+				fracPart = after
+			}
+		}
+	case lastDot >= 0:
+		// Only dot(s).
+		if strings.Count(s, ".") > 1 {
+			intPart = strings.ReplaceAll(s, ".", "")
+		} else {
+			after := s[lastDot+1:]
+			if len(after) == 3 && len(s[:lastDot]) >= 1 {
+				// European thousands separator e.g. 1.234
+				intPart = strings.ReplaceAll(s, ".", "")
+			} else {
+				intPart = s[:lastDot]
+				fracPart = after
+			}
+		}
+	default:
+		intPart = s
+	}
+
+	if intPart == "" && fracPart == "" {
+		return 0, ErrInvalidAmount
+	}
+	if intPart == "" {
+		intPart = "0"
+	}
+	if len(fracPart) > 2 {
+		return 0, ErrInvalidAmount
+	}
+	for len(fracPart) < 2 {
+		fracPart += "0"
+	}
+
+	whole, err := strconv.ParseInt(intPart, 10, 64)
+	if err != nil {
+		return 0, ErrInvalidAmount
+	}
+	frac, err := strconv.ParseInt(fracPart, 10, 64)
+	if err != nil {
+		return 0, ErrInvalidAmount
+	}
+
+	total := whole*100 + frac
+	if neg {
+		total = -total
+	}
+	return total, nil
+}
+
+// Format formats minor units using Greek/European grouping and comma decimal,
+// e.g. 123456 -> "1.234,56 €", -500 -> "-5,00 €".
+func Format(cents int64, symbol string) string {
+	neg := cents < 0
+	if neg {
+		cents = -cents
+	}
+	whole := cents / 100
+	frac := cents % 100
+
+	wholeStr := strconv.FormatInt(whole, 10)
+	grouped := groupThousands(wholeStr, '.')
+	out := fmt.Sprintf("%s,%02d", grouped, frac)
+	if neg {
+		out = "-" + out
+	}
+	if symbol != "" {
+		out += " " + symbol
+	}
+	return out
+}
+
+// FormatInput formats minor units for editable text inputs without thousands separators,
+// e.g. 123456 -> "1234,56".
+func FormatInput(cents int64) string {
+	if cents < 0 {
+		cents = -cents
+	}
+	return fmt.Sprintf("%d,%02d", cents/100, cents%100)
+}
+
+// FormatCSV formats minor units as standard decimal with dot for CSV portability,
+// e.g. 123456 -> "1234.56", -500 -> "-5.00".
+func FormatCSV(cents int64) string {
+	neg := cents < 0
+	if neg {
+		cents = -cents
+	}
+	s := fmt.Sprintf("%d.%02d", cents/100, cents%100)
+	if neg {
+		return "-" + s
+	}
+	return s
+}
+
+func groupThousands(digits string, sep byte) string {
+	n := len(digits)
+	if n <= 3 {
+		return digits
+	}
+	var b strings.Builder
+	rem := n % 3
+	if rem > 0 {
+		b.WriteString(digits[:rem])
+		if n > rem {
+			b.WriteByte(sep)
+		}
+	}
+	for i := rem; i < n; i += 3 {
+		if i > rem {
+			b.WriteByte(sep)
+		}
+		b.WriteString(digits[i : i+3])
+	}
+	return b.String()
+}

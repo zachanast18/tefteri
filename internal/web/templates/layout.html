@@ -1,0 +1,68 @@
+{{define "layout"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#215440">
+  <title>{{.Title}} — Teftéri</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="manifest" href="/static/manifest.webmanifest">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
+  {{if .Authenticated}}
+  <header class="site-header">
+    <div class="header-inner">
+      <div class="site-brand-wrap">
+        <a class="site-brand" href="/">
+          <svg class="brand-icon" width="22" height="22" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+            <rect x="4" y="3" width="24" height="26" rx="3" fill="#215440"/>
+            <rect x="8" y="6" width="17" height="20" rx="1.5" fill="#FFFDFA"/>
+            <line x1="11" y1="11" x2="22" y2="11" stroke="#202820" stroke-width="1.8" stroke-linecap="round"/>
+            <line x1="11" y1="15.5" x2="22" y2="15.5" stroke="#D8D5CB" stroke-width="1.8" stroke-linecap="round"/>
+            <line x1="11" y1="20" x2="18" y2="20" stroke="#D8D5CB" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
+          <span>Teftéri</span>
+        </a>
+        {{if gt (len .Households) 1}}
+        <form method="POST" action="/households/switch" style="display: inline-flex; align-items: center; gap: 0.25rem;">
+          <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+          <label for="hh-switch" class="sr-only">Active household</label>
+          <select id="hh-switch" name="household_id" class="household-select" onchange="this.form.submit()">
+            {{range .Households}}
+            <option value="{{.ID}}" {{if eq .ID $.ActiveHouseholdID}}selected{{end}}>{{.Name}}</option>
+            {{end}}
+          </select>
+          <noscript><button type="submit" class="btn btn-secondary btn-sm">Switch</button></noscript>
+        </form>
+        {{else if .ActiveHouseholdName}}
+        <span class="household-pill" title="Active household">{{.ActiveHouseholdName}}</span>
+        {{end}}
+      </div>
+      <nav class="site-nav" aria-label="Primary">
+        <a class="nav-link" href="/" {{if eq .Nav "overview"}}aria-current="page"{{end}}>Overview</a>
+        <a class="nav-link" href="/ledger" {{if eq .Nav "ledger"}}aria-current="page"{{end}}>Ledger</a>
+        <a class="nav-link" href="/subscriptions" {{if eq .Nav "subscriptions"}}aria-current="page"{{end}}>Subscriptions</a>
+        {{if gt .ReviewCount 0}}
+        <a class="nav-link" href="/inbox">Needs review ({{.ReviewCount}})</a>
+        {{end}}
+        <a class="nav-link" href="/users" {{if eq .Nav "users"}}aria-current="page"{{end}}>Household</a>
+        <form class="nav-logout" method="POST" action="/logout">
+          <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+          <button type="submit" class="btn-link-muted">Sign out{{if .CurrentUserName}} ({{.CurrentUserName}}){{end}}</button>
+        </form>
+      </nav>
+    </div>
+  </header>
+  {{end}}
+  <main id="main-content" class="main-wrap">
+    {{if .Flash}}
+    <div class="panel panel-info" role="status">{{.Flash}}</div>
+    {{end}}
+    {{template "content" .}}
+  </main>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
+{{end}}

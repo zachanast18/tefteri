@@ -1,0 +1,205 @@
+{{define "content"}}
+<div class="page-head">
+  <h1>{{.ActiveHouseholdName}}</h1>
+  <span class="muted">Signed in as <strong>{{.CurrentUserName}}</strong></span>
+</div>
+
+{{if .Error}}
+<div class="panel panel-danger" role="alert">{{.Error}}</div>
+{{end}}
+
+{{if .InviteCode}}
+<div class="panel panel-info" role="status">
+  <strong>One-time invite code (valid 7 days):</strong> <code>{{.InviteCode}}</code>
+  <div class="field-hint">Another user can enter this code under "Join another household" on their Household page.</div>
+</div>
+{{end}}
+
+<div class="overview-grid">
+  <div>
+    <section class="section-block" aria-labelledby="members-heading">
+      <div class="section-head">
+        <h2 id="members-heading">Members</h2>
+        <form method="POST" action="/households/invite">
+          <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+          <button type="submit" class="btn btn-secondary btn-sm">Generate invite code</button>
+        </form>
+      </div>
+      <div class="ledger-table-wrap" style="display: block;">
+        <table class="ledger-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Username</th>
+              <th>Role</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{range .Members}}
+            <tr>
+              <td><strong>{{.Label}}</strong></td>
+              <td>{{.Username}}</td>
+              <td>{{.Role}}</td>
+            </tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section-block" aria-labelledby="balances-heading">
+      <h2 id="balances-heading">Member balances &amp; settlements</h2>
+      <p class="field-hint">Calculated from split expenses and settlements. Settlements do not change household spending totals.</p>
+      <ul class="sub-list" style="margin-bottom: 1rem;">
+        {{range .Balances}}
+        <li class="sub-item" style="display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0;">
+          <strong>{{.Name}}</strong>
+          {{if gt .BalanceCents 0}}
+          <span class="num" style="color: var(--accent); font-weight: 600;">Owed {{formatMoney .BalanceCents}}</span>
+          {{else if lt .BalanceCents 0}}
+          <span class="num" style="color: var(--danger); font-weight: 600;">Owes {{formatMoney (subZero .BalanceCents)}}</span>
+          {{else}}
+          <span class="num muted">Settled (0,00 €)</span>
+          {{end}}
+        </li>
+        {{end}}
+      </ul>
+
+      {{if gt (len .Members) 1}}
+      <details style="margin-bottom: 1rem;">
+        <summary>Record a settlement</summary>
+        <form class="panel form-stack" method="POST" action="/settlements" style="margin-top: 0.5rem;">
+          <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+          <div class="inline-confirm-fields">
+            <div class="field">
+              <label for="st-from">From (payer)</label>
+              <select id="st-from" name="from_user_id">
+                {{range .Members}}
+                <option value="{{.UserID}}">{{.Label}}</option>
+                {{end}}
+              </select>
+            </div>
+            <div class="field">
+              <label for="st-to">To (recipient)</label>
+              <select id="st-to" name="to_user_id">
+                {{range .Members}}
+                <option value="{{.UserID}}">{{.Label}}</option>
+                {{end}}
+              </select>
+            </div>
+            <div class="field">
+              <label for="st-amt">Amount ({{.Currency}})</label>
+              <input id="st-amt" name="amount" type="text" inputmode="decimal" required placeholder="0,00">
+            </div>
+            <div class="field">
+              <label for="st-date">Date</label>
+              <input id="st-date" name="settled_date" type="date" value="{{.Today}}">
+            </div>
+          </div>
+          <div class="field">
+            <label for="st-note">Note (optional)</label>
+            <input id="st-note" name="note" type="text" placeholder="e.g. IRIS transfer">
+          </div>
+          <div>
+            <button type="submit" class="btn btn-primary btn-sm">Record settlement</button>
+          </div>
+        </form>
+      </details>
+      {{end}}
+
+      {{if .Settlements}}
+      <h3>Recent settlements</h3>
+      <ul class="sub-list">
+        {{range .Settlements}}
+        <li class="sub-item" style="padding: 0.45rem 0; font-size: 0.9375rem;">
+          <span class="num">{{formatDate .SettledDate}}</span> · <strong>{{.FromName}}</strong> paid <strong>{{.ToName}}</strong> <strong class="num">{{formatMoney .AmountCents}}</strong>{{if .Note}} ({{.Note}}){{end}}
+        </li>
+        {{end}}
+      </ul>
+      {{end}}
+    </section>
+
+    <section class="panel" aria-labelledby="add-user-heading">
+      <h2 id="add-user-heading">Add new member to {{.ActiveHouseholdName}}</h2>
+      <form class="form-stack" method="POST" action="/users">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <div class="field">
+          <label for="u-name">Username (used to sign in)</label>
+          <input id="u-name" name="username" type="text" required value="{{.Username}}" placeholder="e.g. maria" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="u-display">Display name (shown on expenses)</label>
+          <input id="u-display" name="display_name" type="text" value="{{.DisplayName}}" placeholder="e.g. Maria">
+        </div>
+        <div class="field">
+          <label for="u-role">Role</label>
+          <select id="u-role" name="role">
+            <option value="member">Member</option>
+            <option value="admin">Admin</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="u-pass">Password (minimum 8 characters)</label>
+          <input id="u-pass" name="password" type="password" required minlength="8" autocomplete="new-password">
+        </div>
+        <div class="field">
+          <label for="u-confirm">Confirm password</label>
+          <input id="u-confirm" name="confirm_password" type="password" required minlength="8" autocomplete="new-password">
+        </div>
+        <div>
+          <button type="submit" class="btn btn-primary">Add member</button>
+        </div>
+      </form>
+    </section>
+  </div>
+
+  <aside class="form-stack" aria-label="Your households">
+    <section class="panel" aria-labelledby="your-hh-heading">
+      <h2 id="your-hh-heading">Your households</h2>
+      <ul class="sub-list">
+        {{range .Households}}
+        <li class="sub-item" style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;">
+          <div>
+            <strong>{{.Name}}</strong>
+            <div class="field-hint">{{.Role}}</div>
+          </div>
+          {{if eq .ID $.ActiveHouseholdID}}
+          <span class="badge badge-active">Active</span>
+          {{else}}
+          <form method="POST" action="/households/switch">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <input type="hidden" name="household_id" value="{{.ID}}">
+            <button type="submit" class="btn btn-secondary btn-sm">Switch</button>
+          </form>
+          {{end}}
+        </li>
+        {{end}}
+      </ul>
+    </section>
+
+    <section class="panel" aria-labelledby="new-hh-heading">
+      <h2 id="new-hh-heading">Create new household</h2>
+      <form class="form-stack" method="POST" action="/households">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <div class="field">
+          <label for="hh-name">Household name</label>
+          <input id="hh-name" name="name" type="text" required placeholder="e.g. Vacation House">
+        </div>
+        <button type="submit" class="btn btn-secondary">Create &amp; switch</button>
+      </form>
+    </section>
+
+    <section class="panel" aria-labelledby="join-hh-heading">
+      <h2 id="join-hh-heading">Join another household</h2>
+      <form class="form-stack" method="POST" action="/households/join">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <div class="field">
+          <label for="invite-code">Invite code</label>
+          <input id="invite-code" name="code" type="text" required placeholder="Paste invite code">
+        </div>
+        <button type="submit" class="btn btn-secondary">Join household</button>
+      </form>
+    </section>
+  </aside>
+</div>
+{{end}}

@@ -1,0 +1,49 @@
+{{define "content"}}
+<div class="page-head">
+  <h1>Needs review</h1>
+  <div class="filter-actions">
+    <a class="btn btn-primary btn-sm" href="/scan">Scan receipt</a>
+    <a class="btn btn-secondary btn-sm" href="/">Overview</a>
+  </div>
+</div>
+
+<p class="muted" style="margin: 0 0 1rem;">
+  Saved receipt drafts stay here and out of confirmed spending until someone finishes them.
+</p>
+
+{{if .Drafts}}
+<ul class="sub-list">
+  {{range .Drafts}}
+  <li class="sub-item">
+    <div style="display: flex; gap: 0.875rem; align-items: flex-start;">
+      <a href="/expenses/new?draft={{.ID}}" style="flex-shrink: 0;">
+        <img src="/receipts/{{.ReceiptImageID}}" alt="Receipt draft" style="width: 56px; height: 72px; object-fit: cover; border: 1px solid var(--rule); border-radius: 4px;">
+      </a>
+      <div style="flex: 1; min-width: 0;">
+        <div class="sub-top">
+          <span class="sub-name">{{if .Merchant}}{{.Merchant}}{{else}}Unnamed merchant{{end}}</span>
+          <span class="sub-price num">{{if gt .AmountCents 0}}{{formatMoney .AmountCents}}{{else}}—{{end}}</span>
+        </div>
+        <div class="sub-meta">
+          {{if .PurchaseDate}}{{formatDate .PurchaseDate}}{{else}}No date{{end}}
+          · <span class="badge badge-due">{{if .ReviewReason}}{{.ReviewReason}}{{else}}Needs review{{end}}</span>
+        </div>
+        <div class="sub-actions">
+          <a class="btn btn-primary btn-sm" href="/expenses/new?draft={{.ID}}">Review &amp; finish</a>
+          <form method="POST" action="/inbox/{{.ID}}/discard">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <button type="submit" class="btn btn-danger btn-sm">Discard</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </li>
+  {{end}}
+</ul>
+{{else}}
+<div class="empty-state">
+  <p class="muted">No receipts waiting for review.</p>
+  <a class="btn btn-secondary btn-sm" href="/scan">Scan receipt</a>
+</div>
+{{end}}
+{{end}}

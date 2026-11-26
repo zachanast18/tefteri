@@ -1,0 +1,18 @@
+{
+  "id": "tefteri",
+  "name": "Teftéri",
+  "short_name": "Teftéri",
+  "description": "Self-hosted household spending ledger",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F7F4ED",
+  "theme_color": "#215440",
+  "icons": [
+    {
+      "src": "/static/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
