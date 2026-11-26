@@ -50,10 +50,10 @@
     <details>
       <summary class="btn btn-danger btn-sm">Delete expense</summary>
       <div class="panel panel-danger" style="margin-top: 0.5rem;">
-        <p style="margin: 0 0 0.5rem;">Permanently delete this {{if eq .Expense.Kind "refund"}}refund{{else}}expense{{end}}?</p>
+        <p style="margin: 0 0 0.5rem;">Delete this expense? <strong>{{.Expense.Merchant}}</strong> (<span class="num">{{formatMoney .Expense.AmountCents}}</span>)</p>
         <form method="POST" action="/expenses/{{.Expense.ID}}/delete">
           <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-          <button type="submit" class="btn btn-danger btn-sm">Confirm delete</button>
+          <button type="submit" class="btn btn-danger btn-sm">Delete expense</button>
         </form>
       </div>
     </details>

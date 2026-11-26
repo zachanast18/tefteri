@@ -31,8 +31,10 @@ type expenseFormData struct {
 	ActionURL        string
 	CancelURL        string
 	SubmitLabel      string
-	IsEdit           bool
-	SubmissionToken  string
+	IsEdit            bool
+	FormHouseholdID   int64
+	FormHouseholdName string
+	SubmissionToken   string
 	DraftID          string
 	ReceiptImageID   int64
 	Amount           string
@@ -159,7 +161,7 @@ func (s *Server) handleScanPost(w http.ResponseWriter, r *http.Request) {
 			draft.OCRError = "Receipt scan timed out. Your photo is attached — please enter the details manually."
 		default:
 			draft.OCRStatus = "failed"
-			draft.OCRError = "Could not read receipt text automatically. Your photo is attached — please enter the details manually."
+			draft.OCRError = "Couldn't read the receipt. Enter the details below."
 		}
 		draft.CheckAmount = true
 		draft.CheckMerchant = true
@@ -206,12 +208,14 @@ func (s *Server) handleExpenseNewGet(w http.ResponseWriter, r *http.Request) {
 	today := recurrence.Today(s.nowFn(), s.cfg.Location)
 
 	data := expenseFormData{
-		BasePage:        s.newBasePage(w, r, "Add expense", "ledger", true),
-		Heading:         "Add expense",
-		ActionURL:       "/expenses",
-		CancelURL:       "/",
-		SubmitLabel:     "Save expense",
-		SubmissionToken: subTok,
+		BasePage:          s.newBasePage(w, r, "Add expense", "ledger", true),
+		Heading:           "Add expense",
+		ActionURL:         "/expenses",
+		CancelURL:         "/",
+		SubmitLabel:       "Save expense",
+		FormHouseholdID:   hhID,
+		FormHouseholdName: u.ActiveHouseholdName,
+		SubmissionToken:   subTok,
 		PurchaseDate:    today,
 		PaidByUserID:    u.ID,
 		SplitMode:       "none",
@@ -289,6 +293,20 @@ func (s *Server) handleExpenseCreatePost(w http.ResponseWriter, r *http.Request)
 
 	u, ok := s.currentUser(r)
 	hhID := u.ActiveHouseholdID
+	hhName := u.ActiveHouseholdName
+	// Preserve draft's household if user switched households in another tab,
+	// verifying current membership on the server.
+	if formHH, err := strconv.ParseInt(r.FormValue("household_id"), 10, 64); err == nil && formHH > 0 && formHH != hhID {
+		if hhs, err := s.store.ListUserHouseholds(r.Context(), u.ID); err == nil {
+			for _, h := range hhs {
+				if h.ID == formHH {
+					hhID = h.ID
+					hhName = h.Name
+					break
+				}
+			}
+		}
+	}
 	cats, _ := s.store.ListCategories(r.Context(), hhID)
 	members, _ := s.store.ListHouseholdMembers(r.Context(), hhID)
 	draftID := strings.TrimSpace(r.FormValue("draft_id"))
@@ -347,12 +365,14 @@ func (s *Server) handleExpenseCreatePost(w http.ResponseWriter, r *http.Request)
 	}
 
 	data := expenseFormData{
-		BasePage:         s.newBasePage(w, r, "Add expense", "ledger", true),
-		Heading:          "Add expense",
-		ActionURL:        "/expenses",
-		CancelURL:        "/",
-		SubmitLabel:      "Save expense",
-		SubmissionToken:  r.FormValue("submission_token"),
+		BasePage:          s.newBasePage(w, r, "Add expense", "ledger", true),
+		Heading:           "Add expense",
+		ActionURL:         "/expenses",
+		CancelURL:         "/",
+		SubmitLabel:       "Save expense",
+		FormHouseholdID:   hhID,
+		FormHouseholdName: hhName,
+		SubmissionToken:   r.FormValue("submission_token"),
 		DraftID:          draftID,
 		ReceiptImageID:   recIDVal,
 		Amount:           strings.TrimSpace(r.FormValue("amount")),
@@ -475,7 +495,7 @@ func (s *Server) handleExpenseCreatePost(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	s.setFlash(w, r, "Expense saved.")
+	s.setFlash(w, r, fmt.Sprintf("Saved %s (%s).", data.Merchant, money.Format(cents, s.cfg.CurrencySymbol)))
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 

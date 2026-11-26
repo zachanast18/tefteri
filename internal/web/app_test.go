@@ -193,7 +193,7 @@ func TestOCRFailureManualCompletionAndBackupRestore(t *testing.T) {
 	scanResp.Body.Close()
 	draftBody := string(draftBodyBytes)
 
-	if !strings.Contains(draftBody, "Could not read receipt text automatically") {
+	if !strings.Contains(draftBody, "Couldn&#39;t read the receipt. Enter the details below.") && !strings.Contains(draftBody, "Couldn't read the receipt. Enter the details below.") {
 		t.Fatalf("expected OCR fallback notice in draft review")
 	}
 	if !strings.Contains(draftBody, "/receipts/") {

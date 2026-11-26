@@ -44,6 +44,7 @@ type BasePage struct {
 	ActiveHouseholdName string
 	Households          []db.Household
 	ReviewCount         int
+	ShowScanAnother     bool
 	CSRFToken           string
 	Flash               string
 	Currency            string
@@ -317,6 +318,7 @@ func (s *Server) newBasePage(w http.ResponseWriter, r *http.Request, title, nav 
 		ActiveHouseholdName: hhName,
 		Households:          hhs,
 		ReviewCount:         revCount,
+		ShowScanAnother:     strings.HasPrefix(flash, "Saved "),
 		CSRFToken:           csrf,
 		Flash:               flash,
 		Currency:            s.cfg.Currency,

@@ -1,18 +1,30 @@
 :root {
-  --bg: #F7F4ED;
-  --surface: #EFECE3;
-  --surface-raised: #FFFDFA;
+  --paper: #F7F4ED;
+  --surface: #FFFDFA;
+  --surface-recessed: #EFECE3;
   --ink: #202820;
   --ink-muted: #5C655C;
-  --accent: #215440;
-  --accent-hover: #183E2F;
-  --accent-soft: #E5EFEA;
-  --danger: #9E382F;
-  --danger-soft: #F9EAE8;
+  --evergreen: #215440;
+  --evergreen-hover: #183E2F;
+  --evergreen-soft: #E5EFEA;
+  --brick: #9E382F;
+  --brick-soft: #F9EAE8;
   --warn: #7D5112;
   --warn-soft: #FAF1DF;
   --rule: #D8D5CB;
+  --control-edge: #748074;
+
+  /* Compatibility aliases */
+  --bg: var(--paper);
+  --surface-raised: var(--surface);
+  --accent: var(--evergreen);
+  --accent-hover: var(--evergreen-hover);
+  --accent-soft: var(--evergreen-soft);
+  --danger: var(--brick);
+  --danger-soft: var(--brick-soft);
+
   --radius: 6px;
+  --font-serif: Georgia, Cambria, "Times New Roman", Times, serif;
   --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Liberation Sans", sans-serif;
 }
 
@@ -88,14 +100,20 @@ a:hover {
 }
 
 .header-inner {
-  max-width: 1080px;
+  max-width: 1120px;
   margin: 0 auto;
-  padding: 0.625rem 1rem;
+  padding: 0.75rem 1rem;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem 1rem;
+}
+
+@media (min-width: 720px) {
+  .header-inner {
+    padding: 0.75rem 1.75rem;
+  }
 }
 
 .site-brand-wrap {
@@ -108,12 +126,15 @@ a:hover {
 .site-brand {
   display: inline-flex;
   align-items: center;
-  gap: 0.45rem;
-  font-weight: 700;
-  font-size: 1.0625rem;
+  gap: 0.5rem;
+  font-family: var(--font-serif);
+  font-weight: 600;
+  font-size: 1.25rem;
+  line-height: 1.35;
+  padding-top: 2px;
   color: var(--ink);
   text-decoration: none;
-  letter-spacing: -0.015em;
+  letter-spacing: -0.01em;
 }
 
 .brand-icon {
@@ -203,9 +224,21 @@ a:hover {
 
 /* Main Container */
 .main-wrap {
-  max-width: 1080px;
+  max-width: 1120px;
   margin: 0 auto;
   padding: 1rem 1rem 3rem;
+}
+
+@media (min-width: 720px) {
+  .main-wrap {
+    padding: 1.5rem 1.75rem 3.5rem;
+  }
+}
+
+.serif-heading {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  line-height: 1.25;
 }
 
 .page-head {
@@ -325,11 +358,13 @@ h3 {
 }
 
 .total-figure {
-  font-size: clamp(2.125rem, 6vw, 3rem);
+  font-size: clamp(2.25rem, 6vw, 3.25rem);
   font-weight: 700;
   letter-spacing: -0.025em;
   line-height: 1.1;
-  margin: 0.25rem 0 0.5rem;
+  margin: 0.5rem 0 0.625rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--rule);
 }
 
 .split-meta {
@@ -644,7 +679,7 @@ table.ledger-table td {
 .field {
   display: flex;
   flex-direction: column;
-  gap: 0.3rem;
+  gap: 0.5rem;
 }
 
 .field label, .field legend {
@@ -680,9 +715,9 @@ textarea {
   width: 100%;
   min-height: 44px;
   padding: 0.5rem 0.625rem;
-  border: 1px solid #C2BEB2;
+  border: 1px solid var(--control-edge);
   border-radius: var(--radius);
-  background: var(--surface-raised);
+  background: var(--surface);
   color: var(--ink);
   font: inherit;
   font-size: 1rem;
@@ -714,9 +749,9 @@ fieldset.radio-group {
   gap: 0.5rem;
   min-height: 44px;
   padding: 0.5rem 0.75rem;
-  border: 1px solid #C2BEB2;
+  border: 1px solid var(--control-edge);
   border-radius: var(--radius);
-  background: var(--surface-raised);
+  background: var(--surface);
   cursor: pointer;
   font-weight: 500;
 }

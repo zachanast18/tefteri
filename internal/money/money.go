@@ -9,8 +9,8 @@ import (
 )
 
 var (
-	ErrInvalidAmount = errors.New("enter a valid amount such as 12,50 or 1.234,56")
-	ErrNonPositive   = errors.New("amount must be greater than zero")
+	ErrInvalidAmount = errors.New("Enter the amount paid.")
+	ErrNonPositive   = errors.New("Enter the amount paid.")
 )
 
 // ParsePositive parses a user-entered or OCR-extracted monetary string into

@@ -1,6 +1,11 @@
 {{define "content"}}
 <div class="page-head">
-  <h1>{{.Heading}}</h1>
+  <div>
+    <h1>{{.Heading}}</h1>
+    {{if gt (len .Households) 1}}
+    <div class="muted" style="font-size: 0.875rem;">Household: <strong>{{.FormHouseholdName}}</strong></div>
+    {{end}}
+  </div>
   {{if .CancelURL}}
   <a class="btn btn-secondary btn-sm" href="{{.CancelURL}}">Cancel</a>
   {{end}}
@@ -16,12 +21,13 @@
 
 {{if .Duplicates}}
 <div class="panel panel-warn" role="alert">
-  <p style="margin: 0 0 0.5rem;"><strong>Possible duplicate detected.</strong></p>
+  <p style="margin: 0 0 0.5rem;"><strong>Possible duplicate</strong></p>
   <ul style="margin: 0 0 0.75rem; padding-left: 1.25rem;">
     {{range .Duplicates}}
     <li>
-      {{if eq .MatchReason "exact_image"}}Exact same receipt image{{else}}Matching merchant, date, and amount{{end}}:
-      <a href="/expenses/{{.ExpenseID}}">{{formatDate .PurchaseDate}} — {{.Merchant}} ({{formatMoney .AmountCents}}, {{paymentLabel .PaymentMethod}})</a>
+      {{if eq .MatchReason "exact_image"}}Same receipt photo on {{formatDate .PurchaseDate}}{{else}}Similar expense on {{formatDate .PurchaseDate}}{{end}}:
+      {{.Merchant}} (<span class="num">{{formatMoney .AmountCents}}</span>, {{paymentLabel .PaymentMethod}}) —
+      <a href="/expenses/{{.ExpenseID}}">View expense</a>
     </li>
     {{end}}
   </ul>
@@ -41,6 +47,7 @@
     <form class="form-stack" method="POST" action="{{.ActionURL}}" {{if not .IsEdit}}enctype="multipart/form-data"{{end}} data-prevent-double-submit>
       <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
       <input type="hidden" name="submission_token" value="{{.SubmissionToken}}">
+      <input type="hidden" name="household_id" value="{{.FormHouseholdID}}">
       <input type="hidden" name="draft_id" value="{{.DraftID}}">
       <input type="hidden" name="receipt_image_id" value="{{.ReceiptImageID}}">
 
@@ -58,7 +65,7 @@
       {{end}}
 
       <div class="field">
-        <label for="amount">Amount ({{.Currency}})</label>
+        <label for="amount">Amount paid ({{.Currency}})</label>
         {{if .CheckAmount}}<span class="field-check-prompt">Check amount</span>{{end}}
         <input id="amount" name="amount" type="text" inputmode="decimal" class="input-amount" required value="{{.Amount}}" placeholder="0,00" autocomplete="off">
         {{with index .Errors "amount"}}<span class="field-error">{{.}}</span>{{end}}
@@ -108,7 +115,7 @@
 
       <label class="checkbox-row">
         <input id="remember_merchant" type="checkbox" name="remember_merchant" value="1" {{if .RememberMerchant}}checked{{end}}>
-        <span>Remember this category for this merchant</span>
+        <span>Remember category for this merchant</span>
       </label>
 
       {{if .Members}}

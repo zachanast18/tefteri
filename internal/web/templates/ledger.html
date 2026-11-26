@@ -127,11 +127,14 @@
 {{else}}
 <div class="empty-state">
   {{if .HasAnyExpenses}}
-  <p class="muted">No results for these filters.</p>
+  <p class="muted">No expenses match these filters</p>
   <a class="btn btn-secondary btn-sm" href="/ledger">Clear filters</a>
   {{else}}
-  <p class="muted">No expenses yet.</p>
-  <a class="btn btn-primary btn-sm" href="/expenses/new">Add expense</a>
+  <p class="muted">No expenses yet</p>
+  <div class="action-row">
+    <a class="btn btn-primary btn-sm" href="/scan">Scan receipt</a>
+    <a class="btn btn-secondary btn-sm" href="/expenses/new">Add expense</a>
+  </div>
   {{end}}
 </div>
 {{end}}

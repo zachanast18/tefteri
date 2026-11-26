@@ -26,20 +26,31 @@ document.addEventListener('DOMContentLoaded', () => {
   if (scanForm && scanSubmit) {
     scanForm.addEventListener('submit', () => {
       scanSubmit.disabled = true;
-      scanSubmit.textContent = 'Scanning…';
+      scanSubmit.textContent = 'Reading receipt…';
       if (scanStatus) {
-        scanStatus.textContent = 'Scanning receipt locally with Tesseract…';
+        scanStatus.textContent = 'Reading receipt';
       }
     });
   }
 
-  // 2. Native <dialog> open/close buttons (e.g. mobile receipt zoom).
+  // 2. Native <dialog> open/close buttons with focus restoration.
+  let lastDialogOpener = null;
   document.querySelectorAll('[data-open-dialog]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const id = btn.getAttribute('data-open-dialog');
       const dlg = document.getElementById(id);
       if (dlg && typeof dlg.showModal === 'function') {
+        lastDialogOpener = btn;
         dlg.showModal();
+      }
+    });
+  });
+
+  document.querySelectorAll('dialog').forEach((dlg) => {
+    dlg.addEventListener('close', () => {
+      if (lastDialogOpener && typeof lastDialogOpener.focus === 'function') {
+        lastDialogOpener.focus();
+        lastDialogOpener = null;
       }
     });
   });

@@ -16,12 +16,12 @@
     <div class="header-inner">
       <div class="site-brand-wrap">
         <a class="site-brand" href="/">
-          <svg class="brand-icon" width="22" height="22" viewBox="0 0 32 32" fill="none" aria-hidden="true">
-            <rect x="4" y="3" width="24" height="26" rx="3" fill="#215440"/>
-            <rect x="8" y="6" width="17" height="20" rx="1.5" fill="#FFFDFA"/>
-            <line x1="11" y1="11" x2="22" y2="11" stroke="#202820" stroke-width="1.8" stroke-linecap="round"/>
-            <line x1="11" y1="15.5" x2="22" y2="15.5" stroke="#D8D5CB" stroke-width="1.8" stroke-linecap="round"/>
-            <line x1="11" y1="20" x2="18" y2="20" stroke="#D8D5CB" stroke-width="1.8" stroke-linecap="round"/>
+          <svg class="brand-icon" width="24" height="24" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+            <rect x="3" y="2" width="26" height="28" rx="4" fill="#215440"/>
+            <rect x="7" y="6" width="18" height="20" rx="1.5" fill="#F7F4ED"/>
+            <line x1="12" y1="6" x2="12" y2="26" stroke="#9E382F" stroke-width="1.4"/>
+            <line x1="14.5" y1="12" x2="22" y2="12" stroke="#202820" stroke-width="1.8" stroke-linecap="round"/>
+            <line x1="14.5" y1="17.5" x2="20" y2="17.5" stroke="#5C655C" stroke-width="1.8" stroke-linecap="round"/>
           </svg>
           <span>Teftéri</span>
         </a>
@@ -59,7 +59,10 @@
   {{end}}
   <main id="main-content" class="main-wrap">
     {{if .Flash}}
-    <div class="panel panel-info" role="status">{{.Flash}}</div>
+    <div class="panel panel-info" role="status">
+      {{.Flash}}
+      {{if .ShowScanAnother}} <a href="/scan" style="margin-left: 0.5rem; font-weight: 600;">Scan another receipt</a>{{end}}
+    </div>
     {{end}}
     {{template "content" .}}
   </main>
