@@ -1,22 +1,43 @@
 # Teftéri
 
-Self-hosted household spending ledger (`tefteri`) built with Go, SQLite, embedded HTML/CSS/JS, and local Tesseract OCR (`ell+eng`). Designed for phone-first receipt capture and Docker Compose deployment on a Proxmox Debian VM.
+[![GitHub Stars](https://img.shields.io/github/stars/zachanast18/tefteri?style=social)](https://github.com/zachanast18/tefteri)
 
-## Defaults
+Self-hosted household spending ledger (`tefteri`) built with Go, SQLite, embedded HTML/CSS/JS, and local Tesseract OCR (`ell+eng`). Runs anywhere Docker runs — home server, mini PC, NAS, VPS, Proxmox VM, or your laptop — with zero cloud OCR, hosted AI, telemetry, or external CDNs.
 
-- **Currency:** `EUR` (`€`)
-- **Timezone:** `Europe/Athens`
-- **OCR languages:** `ell+eng` (Greek + English, bundled in the image; no runtime downloads)
-- **Bind address:** `127.0.0.1:8080` (loopback by default)
+> From the Greek **τεφτέρι** (*teftéri*): the neighborhood shopkeeper's paper ledger book, now in a single Docker container.
+
+## Features
+
+- **Phone-first receipt capture:** Photograph a receipt, review extracted merchant, date, and final total (Greek + English via local Tesseract), choose Cash or Card, and save in under a minute.
+- **Receipt review inbox:** Save incomplete, uncertain, or possible-duplicate drafts to **Needs review** without affecting confirmed spending until someone finishes them.
+- **Multi-household & members:** Create separate households (e.g. home, vacation house), invite members with one-time codes, and switch active households from the header.
+- **Who paid & optional splits:** Track **Paid by** and **Added by** separately, optionally split expenses equally or with custom amounts, view running member balances, and record settlements without altering household spending totals.
+- **Category budgets & refunds:** Set optional monthly limits on the categories you care about, track remaining budget, and record refunds cleanly.
+- **Subscriptions & renewal reminders:** Monthly and yearly subscriptions with month-end and leap-day recurrence anchors, 7/30-day in-app reminders, and idempotent confirmation.
+- **UTF-8 CSV export & live SQLite backups:** Filter the ledger by date, merchant, category, payment method, or member, export to CSV, and take live backups with `VACUUM INTO`.
+
+## Screenshots
+
+| Overview (Desktop) | Overview (Mobile) |
+| --- | --- |
+| ![Teftéri Overview on desktop](docs/screenshots/overview-desktop.png) | ![Teftéri Overview on mobile](docs/screenshots/overview-mobile.png) |
+
+| Receipt Review | Ledger |
+| --- | --- |
+| ![Teftéri Receipt Review](docs/screenshots/review-desktop.png) | ![Teftéri Ledger](docs/screenshots/ledger-desktop.png) |
 
 ## Quick Start (Docker Compose)
 
-1. Copy the example environment file and adjust if needed:
+Works on any Linux, macOS, or Windows host with Docker and the Compose plugin:
+
+1. Clone the repository and copy the example environment file:
    ```bash
+   git clone https://github.com/zachanast18/tefteri.git
+   cd tefteri
    cp .env.example .env
    ```
 
-2. Build the image and create your single household account interactively (password is read without echoing):
+2. Build the image and create your first household account interactively (password is read without echoing):
    ```bash
    docker compose build
    docker compose run --rm app setup-account
@@ -31,30 +52,30 @@ Self-hosted household spending ledger (`tefteri`) built with Go, SQLite, embedde
    ```bash
    docker compose ps
    ```
-   Open `http://127.0.0.1:8080` (or your HTTPS reverse proxy URL on your phone).
+   Open `http://127.0.0.1:8080` (or your HTTPS reverse proxy URL on your phone), then open the **Household** tab to add your partner, create additional households, or generate invite codes.
 
-## Configuration
+## Defaults & Configuration
 
-Edit `.env` before starting:
+Defaults are `EUR` (`€`), `Europe/Athens`, `ell+eng` OCR languages, and `127.0.0.1:8080`. Edit `.env` before starting to customize:
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `BIND_ADDR` | `127.0.0.1` | Host IP to bind. Use `127.0.0.1` when a reverse proxy runs on the same VM, or the VM's private LAN/WireGuard IP if the proxy runs on another host. |
+| `BIND_ADDR` | `127.0.0.1` | Host IP to bind. Keep `127.0.0.1` when a reverse proxy runs on the same host, or set your server's private LAN/VPN IP if the proxy runs elsewhere. |
 | `APP_PORT` | `8080` | Host port mapped to container port `8080`. |
 | `APP_CURRENCY` | `EUR` | ISO currency code displayed in forms and CSV exports. |
 | `APP_CURRENCY_SYMBOL` | `€` | Currency symbol used in formatted totals. |
 | `APP_TIMEZONE` | `Europe/Athens` | IANA timezone for calendar dates and subscription schedules. |
-| `OCR_LANGUAGES` | `ell+eng` | Tesseract language packs passed to `-l`. |
+| `OCR_LANGUAGES` | `ell+eng` | Tesseract language packs passed to `-l` (bundled in the image). |
 | `OCR_TIMEOUT_SECONDS` | `25` | Subprocess timeout for a single receipt scan. |
 | `COOKIE_SECURE` | `auto` | `auto` sets the `Secure` cookie flag when `X-Forwarded-Proto: https` or TLS is present. |
 
 ## Phone Access via HTTPS Reverse Proxy
 
-Phone browsers require HTTPS for smooth camera/file access and secure cookies. Keep `BIND_ADDR=127.0.0.1` if Caddy or Nginx runs on the same VM, or set `BIND_ADDR=<VM_PRIVATE_IP>` if the proxy runs on another host (for example, a dedicated reverse-proxy VM or OPNsense).
+Phone browsers work best with HTTPS for camera access and secure cookies. Keep `BIND_ADDR=127.0.0.1` if Caddy, Nginx, or Traefik runs on the same host, or set `BIND_ADDR=<PRIVATE_IP>` if the proxy runs on another machine.
 
 Example Caddyfile:
 ```caddy
-ledger.home.arpa {
+tefteri.home.arpa {
     reverse_proxy 127.0.0.1:8080
 }
 ```
@@ -85,7 +106,7 @@ SQLite live backups use `VACUUM INTO` so both transactions and stored receipt im
 
 ```bash
 docker compose exec app /usr/local/bin/ledger backup /data/backup.db
-docker compose cp app:/data/backup.db ./household-backup-$(date +%F).db
+docker compose cp app:/data/backup.db ./tefteri-backup-$(date +%F).db
 docker compose exec app rm -f /data/backup.db
 ```
 
@@ -94,13 +115,11 @@ docker compose exec app rm -f /data/backup.db
 ```bash
 docker volume create ledger_data_restore
 docker run --rm -v ledger_data_restore:/data -v "$PWD":/backup debian:bookworm-slim \
-  sh -c "cp /backup/household-backup-YYYY-MM-DD.db /data/ledger.db && chown 10001:10001 /data/ledger.db"
+  sh -c "cp /backup/tefteri-backup-YYYY-MM-DD.db /data/ledger.db && chown 10001:10001 /data/ledger.db"
 ```
 
-Point a test or restored container at `ledger_data_restore:/data` and verify that both expenses and saved receipt images open after signing in.
+## Star History
 
-## Subscription Behaviour
+If Teftéri helped your household keep track of where the grocery money went, feel free to leave a star — it keeps the ink flowing in the ledger!
 
-- Renewals are anchored to the original day of the month (and month/day for yearly renewals), clamping to the last day of shorter months (e.g., Jan 31 -> Feb 28/29 -> Mar 31; Feb 29 -> Feb 28 in non-leap years -> Feb 29 in leap years).
-- Confirming a renewal creates the linked expense and records `(subscription_id, scheduled_date)` in one transaction.
-- If a linked expense is later deleted from the ledger, the occurrence record remains so the renewal does not silently reappear as due.
+[![Star History Chart](https://api.star-history.com/svg?repos=zachanast18/tefteri&type=Date)](https://www.star-history.com/#zachanast18/tefteri&Date)
