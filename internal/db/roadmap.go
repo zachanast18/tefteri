@@ -313,16 +313,43 @@ func (s *Store) UpdateDraftInbox(ctx context.Context, householdID int64, d Recei
 	if err != nil {
 		return err
 	}
-	mEnc, _ := crypto.Encrypt(dek, crypto.AAD(householdID, "receipt_drafts", d.ID, "merchant"), []byte(strings.TrimSpace(d.Merchant)))
-	aEnc, _ := crypto.EncryptInt64(dek, crypto.AAD(householdID, "receipt_drafts", d.ID, "amount"), d.AmountCents)
+	mEnc, err := crypto.Encrypt(dek, crypto.AAD(householdID, "receipt_drafts", d.ID, "merchant"), []byte(strings.TrimSpace(d.Merchant)))
+	if err != nil {
+		return err
+	}
+	aEnc, err := crypto.EncryptInt64(dek, crypto.AAD(householdID, "receipt_drafts", d.ID, "amount"), d.AmountCents)
+	if err != nil {
+		return err
+	}
+	nEnc, err := crypto.Encrypt(dek, crypto.AAD(householdID, "receipt_drafts", d.ID, "note"), []byte(strings.TrimSpace(d.Note)))
+	if err != nil {
+		return err
+	}
+	rawEnc, err := crypto.Encrypt(dek, crypto.AAD(householdID, "receipt_drafts", d.ID, "amount_raw"), []byte(strings.TrimSpace(d.AmountRaw)))
+	if err != nil {
+		return err
+	}
+	splitEnc, err := crypto.Encrypt(dek, crypto.AAD(householdID, "receipt_drafts", d.ID, "split_data"), []byte(d.SplitData))
+	if err != nil {
+		return err
+	}
+	kind := d.Kind
+	if kind != "refund" {
+		kind = "expense"
+	}
+	var paidBy any
+	if d.PaidByUserID != nil && *d.PaidByUserID > 0 {
+		paidBy = *d.PaidByUserID
+	}
 	res, err := s.DB.ExecContext(ctx, `
 		UPDATE receipt_drafts
 		SET merchant = '', purchase_date = ?, amount_cents = 0, payment_method = ?,
-		    category_id = ?, needs_review = 1, review_reason = ?,
-		    merchant_enc = ?, amount_enc = ?, enc_version = 1
+		    category_id = ?, kind = ?, paid_by_user_id = ?, needs_review = 1, review_reason = ?,
+		    merchant_enc = ?, amount_enc = ?, note_enc = ?, amount_raw_enc = ?, split_data_enc = ?, enc_version = 1
 		WHERE id = ? AND household_id = ?
 	`, d.PurchaseDate, d.PaymentMethod,
-		nullableInt64(d.CategoryID), strings.TrimSpace(d.ReviewReason), mEnc, aEnc, d.ID, householdID)
+		nullableInt64(d.CategoryID), kind, paidBy, strings.TrimSpace(d.ReviewReason),
+		mEnc, aEnc, nEnc, rawEnc, splitEnc, d.ID, householdID)
 	if err != nil {
 		return err
 	}

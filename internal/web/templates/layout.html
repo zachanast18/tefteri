@@ -47,12 +47,17 @@
         {{if gt .ReviewCount 0}}
         <a class="nav-link" href="/inbox">Needs review ({{.ReviewCount}})</a>
         {{end}}
-        <a class="nav-link" href="/users" {{if eq .Nav "users"}}aria-current="page"{{end}}>Household</a>
-        <a class="nav-link" href="/security" {{if eq .Nav "security"}}aria-current="page"{{end}}>Security</a>
-        <form class="nav-logout" method="POST" action="/logout">
-          <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-          <button type="submit" class="btn-link-muted">Sign out{{if .CurrentUserName}} ({{.CurrentUserName}}){{end}}</button>
-        </form>
+        <details class="nav-account-menu">
+          <summary class="nav-link nav-account-summary">Account</summary>
+          <div class="nav-account-dropdown">
+            <a class="nav-link" href="/users" {{if eq .Nav "users"}}aria-current="page"{{end}}>Household</a>
+            <a class="nav-link" href="/security" {{if eq .Nav "security"}}aria-current="page"{{end}}>Security</a>
+            <form class="nav-logout" method="POST" action="/logout">
+              <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+              <button type="submit" class="btn-link-muted">Sign out{{if .CurrentUserName}} ({{.CurrentUserName}}){{end}}</button>
+            </form>
+          </div>
+        </details>
       </nav>
     </div>
   </header>

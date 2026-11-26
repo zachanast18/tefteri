@@ -37,8 +37,11 @@
 
 <div class="review-layout">
   {{if .ReceiptImageID}}
-  <div class="review-receipt-desktop panel">
-    <h2 style="margin-bottom: 0.5rem;">Receipt photo</h2>
+  <div class="receipt-full-desktop panel">
+    <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.5rem;">
+      <h2 style="margin: 0;">Receipt photo</h2>
+      <button type="button" class="btn btn-secondary btn-sm" data-open-dialog="receipt-zoom-dialog">View full receipt</button>
+    </div>
     <img src="/receipts/{{.ReceiptImageID}}" alt="Uploaded receipt photo">
   </div>
   {{end}}
@@ -57,7 +60,7 @@
         <div>
           <div style="font-weight: 600;">Receipt attached</div>
           <div style="display: flex; gap: 0.5rem; margin-top: 0.25rem;">
-            <button type="button" class="btn btn-secondary btn-sm" data-open-dialog="receipt-zoom-dialog">View larger</button>
+            <button type="button" class="btn btn-secondary btn-sm" data-open-dialog="receipt-zoom-dialog">View full receipt</button>
             <noscript><a class="btn btn-secondary btn-sm" href="/receipts/{{.ReceiptImageID}}" target="_blank" rel="noopener">Open</a></noscript>
           </div>
         </div>
@@ -113,9 +116,9 @@
         {{with index .Errors "category_id"}}<span class="field-error">{{.}}</span>{{end}}
       </div>
 
-      <label class="checkbox-row">
+      <label class="checkbox-row" id="remember-merchant-row">
         <input id="remember_merchant" type="checkbox" name="remember_merchant" value="1" {{if .RememberMerchant}}checked{{end}}>
-        <span>Remember category for this merchant</span>
+        <span id="remember-merchant-label">Use this category for future receipts from this merchant</span>
       </label>
 
       {{if .Members}}

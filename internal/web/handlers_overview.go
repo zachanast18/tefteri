@@ -2,6 +2,7 @@ package web
 
 import (
 	"net/http"
+	"strconv"
 	"time"
 
 	"spending-project/internal/db"
@@ -111,24 +112,52 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	budgets, _ := s.store.ListCategoryBudgets(r.Context(), hhID)
 	allCats, _ := s.store.ListCategories(r.Context(), hhID)
 
+	isFullSingleMonth := false
+	if fT, err1 := recurrence.ParseDate(fromDate, s.cfg.Location); err1 == nil {
+		if tT, err2 := recurrence.ParseDate(toDate, s.cfg.Location); err2 == nil {
+			lastOfSameMonth := time.Date(fT.Year(), fT.Month()+1, 0, 0, 0, 0, 0, s.cfg.Location)
+			isFullSingleMonth = fT.Day() == 1 && fT.Year() == tT.Year() && fT.Month() == tT.Month() && tT.Day() == lastOfSameMonth.Day()
+		}
+	}
+
+	seenCat := make(map[int64]bool, len(summary.ByCategory))
 	catRows := make([]categoryRow, 0, len(summary.ByCategory))
 	for _, c := range summary.ByCategory {
+		seenCat[c.CategoryID] = true
 		row := categoryRow{
 			CategoryID:     c.CategoryID,
 			CategoryName:   c.CategoryName,
 			TotalFormatted: money.Format(c.TotalCents, s.cfg.CurrencySymbol),
 			SharePercent:   c.SharePercent,
 		}
-		if lim, ok := budgets[c.CategoryID]; ok && lim > 0 {
-			diff := lim - c.TotalCents
-			if diff >= 0 {
-				row.BudgetText = money.Format(diff, s.cfg.CurrencySymbol) + " left of " + money.Format(lim, s.cfg.CurrencySymbol)
-			} else {
-				row.BudgetOver = true
-				row.BudgetText = "Over by " + money.Format(-diff, s.cfg.CurrencySymbol) + " (" + money.Format(lim, s.cfg.CurrencySymbol) + " budget)"
+		if isFullSingleMonth {
+			if lim, ok := budgets[c.CategoryID]; ok && lim > 0 {
+				diff := lim - c.TotalCents
+				if diff >= 0 {
+					row.BudgetText = money.Format(diff, s.cfg.CurrencySymbol) + " left of " + money.Format(lim, s.cfg.CurrencySymbol)
+				} else {
+					row.BudgetOver = true
+					row.BudgetText = "Over by " + money.Format(-diff, s.cfg.CurrencySymbol) + " (" + money.Format(lim, s.cfg.CurrencySymbol) + " budget)"
+				}
 			}
 		}
 		catRows = append(catRows, row)
+	}
+	if isFullSingleMonth {
+		for _, cat := range allCats {
+			if seenCat[cat.ID] {
+				continue
+			}
+			if lim, ok := budgets[cat.ID]; ok && lim > 0 {
+				catRows = append(catRows, categoryRow{
+					CategoryID:     cat.ID,
+					CategoryName:   cat.Name,
+					TotalFormatted: money.Format(0, s.cfg.CurrencySymbol),
+					SharePercent:   0,
+					BudgetText:     money.Format(lim, s.cfg.CurrencySymbol) + " left of " + money.Format(lim, s.cfg.CurrencySymbol),
+				})
+			}
+		}
 	}
 
 	var maxTrend int64
@@ -167,7 +196,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		if sub.Status == "active" {
 			row := subReminderRow{Subscription: sub}
 			if dueT, err := recurrence.ParseDate(sub.NextDueDate, s.cfg.Location); err == nil {
-				days := int(dueT.Sub(todayT).Hours() / 24)
+				days := civilDaysBetween(todayT, dueT)
 				switch {
 				case days < 0:
 					row.DueLabel = "Overdue"
@@ -178,25 +207,21 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 					row.IsWithin7 = true
 					dueSoonCount++
 				case days <= 7:
-					row.DueLabel = "Due in " + strconvItoa(days) + "d"
+					row.DueLabel = "Due in " + strconv.Itoa(days) + "d"
 					row.IsWithin7 = true
 					dueSoonCount++
 				case days <= 30:
-					row.DueLabel = "Due in " + strconvItoa(days) + "d"
+					row.DueLabel = "Due in " + strconv.Itoa(days) + "d"
 					row.IsWithin30 = true
 				}
 			}
-			upcoming = append(upcoming, row)
-			if len(upcoming) >= 5 {
-				break
+			if len(upcoming) < 5 {
+				upcoming = append(upcoming, row)
 			}
 		}
 	}
 
-	estMonthly, err := s.store.EstimatedMonthlySubscriptionCost(r.Context(), hhID)
-	if err != nil {
-		estMonthly = 0
-	}
+	estMonthly := db.EstimatedMonthlyCostFromList(allSubs)
 
 	s.render(w, r, "overview.html", http.StatusOK, overviewPageData{
 		BasePage:               s.newBasePage(w, r, "Overview", "overview", true),
@@ -220,18 +245,8 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func strconvItoa(n int) string {
-	return time.Duration(n).String()[:0] + func() string {
-		if n == 0 {
-			return "0"
-		}
-		buf := [12]byte{}
-		i := len(buf)
-		for n > 0 {
-			i--
-			buf[i] = byte('0' + n%10)
-			n /= 10
-		}
-		return string(buf[i:])
-	}()
+func civilDaysBetween(from, to time.Time) int {
+	uFrom := time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, time.UTC)
+	uTo := time.Date(to.Year(), to.Month(), to.Day(), 0, 0, 0, 0, time.UTC)
+	return int(uTo.Sub(uFrom) / (24 * time.Hour))
 }

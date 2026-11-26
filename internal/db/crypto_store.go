@@ -506,18 +506,18 @@ func reencryptReceiptsTx(ctx context.Context, tx *sql.Tx, hhID int64, oldDEK, ne
 }
 
 func reencryptDraftsTx(ctx context.Context, tx *sql.Tx, hhID int64, oldDEK, newDEK []byte) error {
-	rows, err := tx.QueryContext(ctx, `SELECT id, merchant_enc, amount_enc, ocr_error_enc FROM receipt_drafts WHERE household_id = ? AND enc_version = 1`, hhID)
+	rows, err := tx.QueryContext(ctx, `SELECT id, merchant_enc, amount_enc, ocr_error_enc, note_enc, amount_raw_enc, split_data_enc FROM receipt_drafts WHERE household_id = ? AND enc_version = 1`, hhID)
 	if err != nil {
 		return err
 	}
 	type item struct {
-		id         string
-		m, a, e    []byte
+		id                     string
+		m, a, e, n, raw, split []byte
 	}
 	var list []item
 	for rows.Next() {
 		var x item
-		if err := rows.Scan(&x.id, &x.m, &x.a, &x.e); err != nil {
+		if err := rows.Scan(&x.id, &x.m, &x.a, &x.e, &x.n, &x.raw, &x.split); err != nil {
 			rows.Close()
 			return err
 		}
@@ -540,7 +540,29 @@ func reencryptDraftsTx(ctx context.Context, tx *sql.Tx, hhID int64, oldDEK, newD
 		mNew, _ := crypto.Encrypt(newDEK, crypto.AAD(hhID, "receipt_drafts", x.id, "merchant"), mPt)
 		aNew, _ := crypto.EncryptInt64(newDEK, crypto.AAD(hhID, "receipt_drafts", x.id, "amount"), aPt)
 		eNew, _ := crypto.Encrypt(newDEK, crypto.AAD(hhID, "receipt_drafts", x.id, "ocr_error"), ePt)
-		if _, err := tx.ExecContext(ctx, `UPDATE receipt_drafts SET merchant_enc = ?, amount_enc = ?, ocr_error_enc = ? WHERE id = ?`, mNew, aNew, eNew, x.id); err != nil {
+		var nNew, rawNew, splitNew []byte
+		if len(x.n) > 0 {
+			nPt, err := crypto.Decrypt(oldDEK, crypto.AAD(hhID, "receipt_drafts", x.id, "note"), x.n)
+			if err != nil {
+				return err
+			}
+			nNew, _ = crypto.Encrypt(newDEK, crypto.AAD(hhID, "receipt_drafts", x.id, "note"), nPt)
+		}
+		if len(x.raw) > 0 {
+			rawPt, err := crypto.Decrypt(oldDEK, crypto.AAD(hhID, "receipt_drafts", x.id, "amount_raw"), x.raw)
+			if err != nil {
+				return err
+			}
+			rawNew, _ = crypto.Encrypt(newDEK, crypto.AAD(hhID, "receipt_drafts", x.id, "amount_raw"), rawPt)
+		}
+		if len(x.split) > 0 {
+			splitPt, err := crypto.Decrypt(oldDEK, crypto.AAD(hhID, "receipt_drafts", x.id, "split_data"), x.split)
+			if err != nil {
+				return err
+			}
+			splitNew, _ = crypto.Encrypt(newDEK, crypto.AAD(hhID, "receipt_drafts", x.id, "split_data"), splitPt)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE receipt_drafts SET merchant_enc = ?, amount_enc = ?, ocr_error_enc = ?, note_enc = ?, amount_raw_enc = ?, split_data_enc = ? WHERE id = ?`, mNew, aNew, eNew, nNew, rawNew, splitNew, x.id); err != nil {
 			return err
 		}
 	}

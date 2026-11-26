@@ -8,56 +8,70 @@
   </div>
 </div>
 
-<form class="filter-form" method="GET" action="/ledger">
-  <div class="field">
-    <label for="f-from">From</label>
-    <input id="f-from" type="date" name="from" value="{{.Filter.FromDate}}">
-  </div>
-  <div class="field">
-    <label for="f-to">To</label>
-    <input id="f-to" type="date" name="to" value="{{.Filter.ToDate}}">
-  </div>
-  <div class="field">
-    <label for="f-merchant">Merchant</label>
-    <input id="f-merchant" type="search" name="merchant" value="{{.Filter.Merchant}}" placeholder="Search merchant">
-  </div>
-  <div class="field">
-    <label for="f-cat">Category</label>
-    <select id="f-cat" name="category">
-      <option value="">All categories</option>
-      {{range .Categories}}
-      <option value="{{.ID}}" {{if eq .ID $.Filter.CategoryID}}selected{{end}}>{{.Name}}</option>
+<form class="filter-form ledger-filter-form" method="GET" action="/ledger">
+  <div class="ledger-search-row">
+    <div class="field" style="flex: 1 1 200px;">
+      <label for="f-merchant">Merchant</label>
+      <input id="f-merchant" type="search" name="merchant" value="{{.Filter.Merchant}}" placeholder="Search merchant">
+    </div>
+    <div class="filter-actions">
+      <button type="submit" class="btn btn-secondary btn-sm">Filter</button>
+      {{if .HasActiveFilters}}
+      <a class="btn btn-secondary btn-sm" href="/ledger">Clear filters</a>
       {{end}}
-    </select>
+    </div>
   </div>
-  <div class="field">
-    <label for="f-pay">Payment</label>
-    <select id="f-pay" name="payment">
-      <option value="">All</option>
-      <option value="cash" {{if eq .Filter.PaymentMethod "cash"}}selected{{end}}>Cash</option>
-      <option value="card" {{if eq .Filter.PaymentMethod "card"}}selected{{end}}>Card</option>
-    </select>
-  </div>
-  <div class="field">
-    <label for="f-user">Member</label>
-    <select id="f-user" name="user">
-      <option value="">All members</option>
-      {{range .Users}}
-      <option value="{{.UserID}}" {{if eq .UserID $.Filter.UserID}}selected{{end}}>{{.Label}}</option>
-      {{end}}
-    </select>
-  </div>
-  <div class="filter-actions">
-    <button type="submit" class="btn btn-secondary btn-sm">Filter</button>
-    {{if .HasActiveFilters}}
-    <a class="btn btn-secondary btn-sm" href="/ledger">Clear filters</a>
-    {{end}}
-  </div>
+
+  {{if .HasActiveFilters}}
+  <p class="muted ledger-filter-summary" style="margin: 0; font-size: 0.875rem;">
+    Active filters: {{.ActiveFilterSummary}}
+  </p>
+  {{end}}
+
+  <details class="ledger-filters-disclosure">
+    <summary class="btn btn-secondary btn-sm ledger-filters-toggle">Filters</summary>
+    <div class="ledger-filters-grid">
+      <div class="field">
+        <label for="f-from">From</label>
+        <input id="f-from" type="date" name="from" value="{{.Filter.FromDate}}">
+      </div>
+      <div class="field">
+        <label for="f-to">To</label>
+        <input id="f-to" type="date" name="to" value="{{.Filter.ToDate}}">
+      </div>
+      <div class="field">
+        <label for="f-user">Paid by</label>
+        <select id="f-user" name="user">
+          <option value="">All members</option>
+          {{range .Users}}
+          <option value="{{.UserID}}" {{if eq .UserID $.Filter.UserID}}selected{{end}}>{{.Label}}</option>
+          {{end}}
+        </select>
+      </div>
+      <div class="field">
+        <label for="f-cat">Category</label>
+        <select id="f-cat" name="category">
+          <option value="">All categories</option>
+          {{range .Categories}}
+          <option value="{{.ID}}" {{if eq .ID $.Filter.CategoryID}}selected{{end}}>{{.Name}}</option>
+          {{end}}
+        </select>
+      </div>
+      <div class="field">
+        <label for="f-pay">Payment</label>
+        <select id="f-pay" name="payment">
+          <option value="">All</option>
+          <option value="cash" {{if eq .Filter.PaymentMethod "cash"}}selected{{end}}>Cash</option>
+          <option value="card" {{if eq .Filter.PaymentMethod "card"}}selected{{end}}>Card</option>
+        </select>
+      </div>
+    </div>
+  </details>
 </form>
 
 {{if .Expenses}}
 <p class="muted" style="margin: 0 0 0.75rem; font-size: 0.875rem;">
-  Showing <strong class="num">{{len .Expenses}}</strong> entries · Net total: <strong class="num">{{.FilteredTotalFormatted}}</strong>
+  Showing <strong class="num">{{len .Expenses}}</strong> of <strong class="num">{{.TotalMatchCount}}</strong> entries · Net total: <strong class="num">{{.FilteredTotalFormatted}}</strong>
 </p>
 
 <div class="ledger-table-wrap">
@@ -78,7 +92,7 @@
       <tr>
         <td class="num">{{formatDate .PurchaseDate}}</td>
         <td class="merchant-cell">
-          <a href="/expenses/{{.ID}}">{{.Merchant}}</a>
+          <a href="/expenses/{{.ID}}?return={{urlquery $.ReturnURL}}">{{.Merchant}}</a>
           {{if eq .Kind "refund"}}<span class="badge">Refund</span>{{end}}
           {{if .ReceiptImageID}}<span class="badge">Receipt</span>{{end}}
           {{if .Note}}<div class="row-note">{{.Note}}</div>{{end}}
@@ -103,7 +117,7 @@
     <ul class="mobile-tx-list">
       {{range .Items}}
       <li class="mobile-tx-item">
-        <a class="mobile-tx-link" href="/expenses/{{.ID}}">
+        <a class="mobile-tx-link" href="/expenses/{{.ID}}?return={{urlquery $.ReturnURL}}">
           <div>
             <div class="merchant-cell">{{.Merchant}}</div>
             <div class="mobile-tx-meta">
@@ -123,6 +137,22 @@
   </section>
   {{end}}
 </div>
+
+{{if gt .TotalPages 1}}
+<nav class="pagination-row" aria-label="Ledger pages">
+  {{if .PrevPageURL}}
+  <a class="btn btn-secondary btn-sm" href="{{.PrevPageURL}}">Previous</a>
+  {{else}}
+  <span></span>
+  {{end}}
+  <span class="muted num">Page {{.Page}} of {{.TotalPages}}</span>
+  {{if .NextPageURL}}
+  <a class="btn btn-secondary btn-sm" href="{{.NextPageURL}}">Next</a>
+  {{else}}
+  <span></span>
+  {{end}}
+</nav>
+{{end}}
 
 {{else}}
 <div class="empty-state">

@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/csv"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -17,6 +18,12 @@ import (
 	"spending-project/internal/ocr"
 	"spending-project/internal/recurrence"
 )
+
+type draftSplitPayload struct {
+	Mode   string            `json:"mode"`
+	Users  []int64           `json:"users,omitempty"`
+	Custom map[string]string `json:"custom,omitempty"`
+}
 
 type scanPageData struct {
 	BasePage
@@ -288,12 +295,37 @@ func (s *Server) handleExpenseNewGet(w http.ResponseWriter, r *http.Request) {
 			if draft.PurchaseDate != "" {
 				data.PurchaseDate = draft.PurchaseDate
 			}
-			if draft.AmountCents > 0 {
+			if draft.AmountRaw != "" {
+				data.Amount = draft.AmountRaw
+			} else if draft.AmountCents > 0 {
 				data.Amount = money.FormatInput(draft.AmountCents)
 			}
 			data.PaymentMethod = draft.PaymentMethod
 			if draft.CategoryID > 0 {
 				data.CategoryID = draft.CategoryID
+			}
+			if draft.Kind == "refund" {
+				data.Kind = "refund"
+			}
+			if draft.PaidByUserID != nil && *draft.PaidByUserID > 0 {
+				data.PaidByUserID = *draft.PaidByUserID
+			}
+			data.Note = draft.Note
+			if draft.SplitData != "" {
+				var sp draftSplitPayload
+				if err := json.Unmarshal([]byte(draft.SplitData), &sp); err == nil {
+					if sp.Mode != "" {
+						data.SplitMode = sp.Mode
+					}
+					for _, uid := range sp.Users {
+						data.SplitSelected[uid] = true
+					}
+					for k, v := range sp.Custom {
+						if uid, err := strconv.ParseInt(k, 10, 64); err == nil {
+							data.CustomSplits[uid] = v
+						}
+					}
+				}
 			}
 			data.CheckMerchant = draft.CheckMerchant
 			data.CheckDate = draft.CheckDate
@@ -377,9 +409,32 @@ func (s *Server) handleExpenseCreatePost(w http.ResponseWriter, r *http.Request)
 	}
 	catID, _ := strconv.ParseInt(r.FormValue("category_id"), 10, 64)
 
+	splitSelected := map[int64]bool{}
+	var splitUserIDs []int64
+	for _, idStr := range r.Form["split_users"] {
+		if id, err := strconv.ParseInt(idStr, 10, 64); err == nil && id > 0 {
+			splitSelected[id] = true
+			splitUserIDs = append(splitUserIDs, id)
+		}
+	}
+	splitMode := strings.TrimSpace(r.FormValue("split_mode"))
+	if splitMode == "" {
+		splitMode = "none"
+	}
+	rawCustomSplits := map[int64]string{}
+	rawCustomJSON := map[string]string{}
+	for _, m := range members {
+		val := strings.TrimSpace(r.FormValue(fmt.Sprintf("split_amount_%d", m.UserID)))
+		if val != "" {
+			rawCustomSplits[m.UserID] = val
+			rawCustomJSON[strconv.FormatInt(m.UserID, 10)] = val
+		}
+	}
+
 	// Save to Receipt Review Inbox without creating an expense.
 	if r.FormValue("save_action") == "draft" && draftID != "" {
-		parsedCents, _ := money.ParsePositive(strings.TrimSpace(r.FormValue("amount")))
+		rawAmount := strings.TrimSpace(r.FormValue("amount"))
+		parsedCents, _ := money.ParsePositive(rawAmount)
 		reason := strings.TrimSpace(r.FormValue("review_reason"))
 		if reason == "" {
 			if parsedCents <= 0 {
@@ -390,25 +445,65 @@ func (s *Server) handleExpenseCreatePost(w http.ResponseWriter, r *http.Request)
 				reason = "Needs review"
 			}
 		}
-		_ = s.store.UpdateDraftInbox(r.Context(), hhID, db.ReceiptDraft{
+		kind := strings.TrimSpace(r.FormValue("kind"))
+		if kind != "refund" {
+			kind = "expense"
+		}
+		splitBytes, _ := json.Marshal(draftSplitPayload{
+			Mode:   splitMode,
+			Users:  splitUserIDs,
+			Custom: rawCustomJSON,
+		})
+		paidByPtr := &paidByID
+		if err := s.store.UpdateDraftInbox(r.Context(), hhID, db.ReceiptDraft{
 			ID:            draftID,
 			Merchant:      strings.TrimSpace(r.FormValue("merchant")),
 			PurchaseDate:  strings.TrimSpace(r.FormValue("purchase_date")),
 			AmountCents:   parsedCents,
+			AmountRaw:     rawAmount,
 			PaymentMethod: strings.TrimSpace(r.FormValue("payment_method")),
 			CategoryID:    catID,
+			Kind:          kind,
+			PaidByUserID:  paidByPtr,
+			Note:          strings.TrimSpace(r.FormValue("note")),
+			SplitData:     string(splitBytes),
 			ReviewReason:  reason,
-		})
+		}); err != nil {
+			subTok, _ := auth.RandomToken(16)
+			data := expenseFormData{
+				BasePage:          s.newBasePage(w, r, "Review receipt", "ledger", true),
+				Heading:           "Review receipt",
+				ActionURL:         "/expenses",
+				CancelURL:         "/",
+				SubmitLabel:       "Save expense",
+				FormHouseholdID:   hhID,
+				FormHouseholdName: hhName,
+				DraftID:           draftID,
+				ReceiptImageID:    recIDVal,
+				SubmissionToken:   subTok,
+				Kind:              kind,
+				Amount:            rawAmount,
+				Merchant:          strings.TrimSpace(r.FormValue("merchant")),
+				PurchaseDate:      strings.TrimSpace(r.FormValue("purchase_date")),
+				PaymentMethod:     strings.TrimSpace(r.FormValue("payment_method")),
+				CategoryID:        catID,
+				PaidByUserID:      paidByID,
+				SplitMode:         splitMode,
+				SplitSelected:     splitSelected,
+				CustomSplits:      rawCustomSplits,
+				Note:              strings.TrimSpace(r.FormValue("note")),
+				RememberMerchant:  r.FormValue("remember_merchant") == "1",
+				Categories:        cats,
+				Members:           members,
+				Errors:            map[string]string{},
+				FormError:         "Could not save draft to inbox. Please try again.",
+			}
+			s.render(w, r, "expense_form.html", http.StatusInternalServerError, data)
+			return
+		}
 		s.setFlash(w, r, "Saved to Needs review inbox.")
 		http.Redirect(w, r, "/inbox", http.StatusSeeOther)
 		return
-	}
-
-	splitSelected := map[int64]bool{}
-	for _, idStr := range r.Form["split_users"] {
-		if id, err := strconv.ParseInt(idStr, 10, 64); err == nil && id > 0 {
-			splitSelected[id] = true
-		}
 	}
 
 	data := expenseFormData{
@@ -567,15 +662,21 @@ func (s *Server) handleExpenseDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	splits, _ := s.store.GetExpenseSplits(r.Context(), exp.ID)
+	retURL := strings.TrimSpace(r.URL.Query().Get("return"))
+	if !strings.HasPrefix(retURL, "/ledger") || strings.HasPrefix(retURL, "//") {
+		retURL = "/ledger"
+	}
 
 	s.render(w, r, "expense_detail.html", http.StatusOK, struct {
 		BasePage
-		Expense db.Expense
-		Splits  []db.ExpenseSplit
+		Expense   db.Expense
+		Splits    []db.ExpenseSplit
+		ReturnURL string
 	}{
-		BasePage: s.newBasePage(w, r, exp.Merchant, "ledger", true),
-		Expense:  exp,
-		Splits:   splits,
+		BasePage:  s.newBasePage(w, r, exp.Merchant, "ledger", true),
+		Expense:   exp,
+		Splits:    splits,
+		ReturnURL: retURL,
 	})
 }
 
@@ -843,7 +944,14 @@ func (s *Server) handleLedger(w http.ResponseWriter, r *http.Request) {
 	hhID := u.ActiveHouseholdID
 	filter := parseExpenseFilter(r)
 	filter.HouseholdID = hhID
-	expenses, err := s.store.ListExpenses(r.Context(), filter)
+
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	const perPage = 50
+
+	expenses, matchCount, netCents, err := s.store.ListExpensesPage(r.Context(), filter, page, perPage)
 	if err != nil {
 		http.Error(w, "failed to load ledger", http.StatusInternalServerError)
 		return
@@ -852,14 +960,8 @@ func (s *Server) handleLedger(w http.ResponseWriter, r *http.Request) {
 	members, _ := s.store.ListHouseholdMembers(r.Context(), hhID)
 	totalCount, _ := s.store.CountAllExpenses(r.Context(), hhID)
 
-	var netCents int64
 	var groups []dayGroup
 	for _, e := range expenses {
-		if e.Kind == "refund" {
-			netCents -= e.AmountCents
-		} else {
-			netCents += e.AmountCents
-		}
 		if len(groups) == 0 || groups[len(groups)-1].Date != e.PurchaseDate {
 			groups = append(groups, dayGroup{Date: e.PurchaseDate, Items: []db.Expense{e}})
 		} else {
@@ -868,13 +970,107 @@ func (s *Server) handleLedger(w http.ResponseWriter, r *http.Request) {
 	}
 
 	hasFilters := filter.FromDate != "" || filter.ToDate != "" || filter.Merchant != "" || filter.CategoryID > 0 || filter.PaymentMethod != "" || filter.UserID > 0
+	var summaryParts []string
+	if filter.FromDate != "" || filter.ToDate != "" {
+		switch {
+		case filter.FromDate != "" && filter.ToDate != "":
+			summaryParts = append(summaryParts, filter.FromDate+" to "+filter.ToDate)
+		case filter.FromDate != "":
+			summaryParts = append(summaryParts, "From "+filter.FromDate)
+		default:
+			summaryParts = append(summaryParts, "Until "+filter.ToDate)
+		}
+	}
+	if filter.UserID > 0 {
+		for _, m := range members {
+			if m.UserID == filter.UserID {
+				summaryParts = append(summaryParts, "Paid by "+m.Label())
+				break
+			}
+		}
+	}
+	if filter.CategoryID > 0 {
+		for _, c := range cats {
+			if c.ID == filter.CategoryID {
+				summaryParts = append(summaryParts, c.Name)
+				break
+			}
+		}
+	}
+	if filter.PaymentMethod != "" {
+		if filter.PaymentMethod == "cash" {
+			summaryParts = append(summaryParts, "Cash")
+		} else if filter.PaymentMethod == "card" {
+			summaryParts = append(summaryParts, "Card")
+		}
+	}
+	if filter.Merchant != "" {
+		summaryParts = append(summaryParts, `"`+filter.Merchant+`"`)
+	}
+
+	totalPages := (matchCount + perPage - 1) / perPage
+	if totalPages < 1 {
+		totalPages = 1
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+
+	exportVals := url.Values{}
+	for k, vs := range r.URL.Query() {
+		if k == "page" {
+			continue
+		}
+		for _, v := range vs {
+			if v != "" {
+				exportVals.Add(k, v)
+			}
+		}
+	}
+	exportQuery := exportVals.Encode()
+
+	var prevPageURL, nextPageURL string
+	if page > 1 {
+		pv := url.Values{}
+		for k, vs := range exportVals {
+			pv[k] = vs
+		}
+		if page-1 > 1 {
+			pv.Set("page", strconv.Itoa(page-1))
+		}
+		if enc := pv.Encode(); enc != "" {
+			prevPageURL = "/ledger?" + enc
+		} else {
+			prevPageURL = "/ledger"
+		}
+	}
+	if page < totalPages {
+		nv := url.Values{}
+		for k, vs := range exportVals {
+			nv[k] = vs
+		}
+		nv.Set("page", strconv.Itoa(page+1))
+		nextPageURL = "/ledger?" + nv.Encode()
+	}
+
+	returnURL := "/ledger"
+	if r.URL.RawQuery != "" {
+		returnURL = "/ledger?" + r.URL.RawQuery
+	}
 
 	s.render(w, r, "ledger.html", http.StatusOK, struct {
 		BasePage
 		Filter                 db.ExpenseFilter
 		FilterQuery            string
+		ReturnURL              string
 		HasActiveFilters       bool
+		ActiveFilterSummary    string
 		HasAnyExpenses         bool
+		TotalMatchCount        int
+		Page                   int
+		TotalPages             int
+		PrevPageURL            string
+		NextPageURL            string
 		FilteredTotalFormatted string
 		Expenses               []db.Expense
 		DayGroups              []dayGroup
@@ -883,9 +1079,16 @@ func (s *Server) handleLedger(w http.ResponseWriter, r *http.Request) {
 	}{
 		BasePage:               s.newBasePage(w, r, "Ledger", "ledger", true),
 		Filter:                 filter,
-		FilterQuery:            r.URL.RawQuery,
+		FilterQuery:            exportQuery,
+		ReturnURL:              returnURL,
 		HasActiveFilters:       hasFilters,
+		ActiveFilterSummary:    strings.Join(summaryParts, " · "),
 		HasAnyExpenses:         totalCount > 0,
+		TotalMatchCount:        matchCount,
+		Page:                   page,
+		TotalPages:             totalPages,
+		PrevPageURL:            prevPageURL,
+		NextPageURL:            nextPageURL,
 		FilteredTotalFormatted: money.Format(netCents, s.cfg.CurrencySymbol),
 		Expenses:               expenses,
 		DayGroups:              groups,

@@ -79,16 +79,31 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  // 4. Show "Remember this for this merchant" hint when category changes on expense form.
+  // 4. Reveal/highlight merchant rule choice when category changes without auto-checking.
   const catSelect = document.getElementById('category_id');
   const rememberCheck = document.getElementById('remember_merchant');
+  const rememberRow = document.getElementById('remember-merchant-row');
+  const rememberLabel = document.getElementById('remember-merchant-label');
   if (catSelect && rememberCheck) {
     const initial = catSelect.value;
-    catSelect.addEventListener('change', () => {
-      if (catSelect.value !== initial) {
-        rememberCheck.checked = true;
+    const syncLabel = () => {
+      const opt = catSelect.options[catSelect.selectedIndex];
+      const catName = opt ? opt.text.trim() : 'this category';
+      if (rememberLabel) {
+        rememberLabel.textContent = `Use ${catName} for future receipts from this merchant`;
       }
-    });
+      if (rememberRow) {
+        rememberRow.classList.toggle('is-highlighted', catSelect.value !== initial);
+      }
+    };
+    syncLabel();
+    catSelect.addEventListener('change', syncLabel);
+  }
+
+  // 4b. Open ledger filters disclosure on desktop viewports by default.
+  const ledgerDisclosure = document.querySelector('.ledger-filters-disclosure');
+  if (ledgerDisclosure && window.matchMedia && window.matchMedia('(min-width: 720px)').matches) {
+    ledgerDisclosure.open = true;
   }
 
   // 5. Auto-submit household switcher without inline onchange handlers (strict CSP).

@@ -118,6 +118,30 @@ func (s *Store) UpdateSubscription(ctx context.Context, householdID, id int64, i
 	if err != nil {
 		return err
 	}
+	var curFreq, curNextDue string
+	var curAnchorDay, curAnchorMonth int
+	err = s.DB.QueryRowContext(ctx, `
+		SELECT frequency, next_due_date, anchor_day, anchor_month
+		FROM subscriptions
+		WHERE id = ? AND household_id = ?
+	`, id, householdID).Scan(&curFreq, &curNextDue, &curAnchorDay, &curAnchorMonth)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+
+	anchorDay := anchorRef.Day()
+	anchorMonth := int(anchorRef.Month())
+	// Preserve the original billing day/month anchor when the schedule itself did not change.
+	if curFreq == in.Frequency && curNextDue == in.NextDueDate && curAnchorDay > 0 {
+		anchorDay = curAnchorDay
+		if curAnchorMonth > 0 {
+			anchorMonth = curAnchorMonth
+		}
+	}
+
 	status := in.Status
 	if status != "paused" {
 		status = "active"
@@ -138,7 +162,7 @@ func (s *Store) UpdateSubscription(ctx context.Context, householdID, id int64, i
 		    status = ?, updated_at = ?
 		WHERE id = ? AND household_id = ?
 	`, nEnc, aEnc, in.Frequency, in.CategoryID,
-		in.PaymentMethod, in.NextDueDate, anchorRef.Day(), int(anchorRef.Month()),
+		in.PaymentMethod, in.NextDueDate, anchorDay, anchorMonth,
 		status, now, id, householdID)
 	if err != nil {
 		return err
@@ -280,12 +304,8 @@ func (s *Store) ListSubscriptions(ctx context.Context, householdID int64, today 
 	return out, rows.Err()
 }
 
-// EstimatedMonthlySubscriptionCost calculates active monthly + yearly/12 in minor units.
-func (s *Store) EstimatedMonthlySubscriptionCost(ctx context.Context, householdID int64) (int64, error) {
-	subs, err := s.ListSubscriptions(ctx, householdID, "")
-	if err != nil {
-		return 0, err
-	}
+// EstimatedMonthlyCostFromList calculates active monthly + yearly/12 in minor units from an already-loaded slice.
+func EstimatedMonthlyCostFromList(subs []Subscription) int64 {
 	var total int64
 	for _, sub := range subs {
 		if sub.Status != "active" {
@@ -297,7 +317,16 @@ func (s *Store) EstimatedMonthlySubscriptionCost(ctx context.Context, householdI
 			total += (sub.AmountCents + 6) / 12
 		}
 	}
-	return total, nil
+	return total
+}
+
+// EstimatedMonthlySubscriptionCost calculates active monthly + yearly/12 in minor units.
+func (s *Store) EstimatedMonthlySubscriptionCost(ctx context.Context, householdID int64) (int64, error) {
+	subs, err := s.ListSubscriptions(ctx, householdID, "")
+	if err != nil {
+		return 0, err
+	}
+	return EstimatedMonthlyCostFromList(subs), nil
 }
 
 func (s *Store) ConfirmRenewal(ctx context.Context, householdID, subscriptionID int64, scheduledDate string, paidAmountCents int64, paidDate string, loc *time.Location) (int64, error) {

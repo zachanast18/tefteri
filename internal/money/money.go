@@ -3,6 +3,7 @@ package money
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"unicode"
@@ -74,42 +75,61 @@ func Parse(raw string) (int64, error) {
 	case lastComma >= 0 && lastDot >= 0:
 		// Both separators present: whichever appears last is the decimal separator.
 		if lastComma > lastDot {
-			intPart = strings.ReplaceAll(s[:lastComma], ".", "")
-			intPart = strings.ReplaceAll(intPart, ",", "")
+			var ok bool
+			intPart, ok = validateGroupedInt(s[:lastComma], ".")
+			if !ok {
+				return 0, ErrInvalidAmount
+			}
 			fracPart = s[lastComma+1:]
 		} else {
-			intPart = strings.ReplaceAll(s[:lastDot], ",", "")
-			intPart = strings.ReplaceAll(intPart, ".", "")
+			var ok bool
+			intPart, ok = validateGroupedInt(s[:lastDot], ",")
+			if !ok {
+				return 0, ErrInvalidAmount
+			}
 			fracPart = s[lastDot+1:]
 		}
 	case lastComma >= 0:
-		// Only comma(s). If multiple commas or 3 trailing digits after single comma, check.
+		// Only comma(s).
 		if strings.Count(s, ",") > 1 {
-			intPart = strings.ReplaceAll(s, ",", "")
+			var ok bool
+			intPart, ok = validateGroupedInt(s, ",")
+			if !ok {
+				return 0, ErrInvalidAmount
+			}
 		} else {
 			after := s[lastComma+1:]
-			if len(after) == 3 && len(s[:lastComma]) >= 1 {
-				// Ambiguous e.g. 1,234 -> treat as thousands if 3 digits? Wait: in EUR locale
-				// comma is decimal, but 1,234 has 3 digits; reject >2 decimal digits unless thousands.
-				// Actually, treat 3 digits after comma when no dot as invalid/ambiguous or thousands:
-				// Let's treat 1-2 digits as decimal; 3 digits as thousands separator.
-				intPart = strings.ReplaceAll(s, ",", "")
+			before := s[:lastComma]
+			if len(after) == 3 && len(before) >= 1 {
+				var ok bool
+				intPart, ok = validateGroupedInt(s, ",")
+				if !ok {
+					return 0, ErrInvalidAmount
+				}
 			} else {
-				intPart = s[:lastComma]
+				intPart = before
 				fracPart = after
 			}
 		}
 	case lastDot >= 0:
 		// Only dot(s).
 		if strings.Count(s, ".") > 1 {
-			intPart = strings.ReplaceAll(s, ".", "")
+			var ok bool
+			intPart, ok = validateGroupedInt(s, ".")
+			if !ok {
+				return 0, ErrInvalidAmount
+			}
 		} else {
 			after := s[lastDot+1:]
-			if len(after) == 3 && len(s[:lastDot]) >= 1 {
-				// European thousands separator e.g. 1.234
-				intPart = strings.ReplaceAll(s, ".", "")
+			before := s[:lastDot]
+			if len(after) == 3 && len(before) >= 1 {
+				var ok bool
+				intPart, ok = validateGroupedInt(s, ".")
+				if !ok {
+					return 0, ErrInvalidAmount
+				}
 			} else {
-				intPart = s[:lastDot]
+				intPart = before
 				fracPart = after
 			}
 		}
@@ -126,6 +146,11 @@ func Parse(raw string) (int64, error) {
 	if len(fracPart) > 2 {
 		return 0, ErrInvalidAmount
 	}
+	for _, r := range fracPart {
+		if !unicode.IsDigit(r) {
+			return 0, ErrInvalidAmount
+		}
+	}
 	for len(fracPart) < 2 {
 		fracPart += "0"
 	}
@@ -138,12 +163,52 @@ func Parse(raw string) (int64, error) {
 	if err != nil {
 		return 0, ErrInvalidAmount
 	}
+	if whole > (math.MaxInt64-frac)/100 {
+		return 0, ErrInvalidAmount
+	}
 
 	total := whole*100 + frac
 	if neg {
 		total = -total
 	}
 	return total, nil
+}
+
+// validateGroupedInt checks that raw is either digits only or valid 3-digit
+// thousands groups separated by sep (e.g. "1.234.567"), returning the
+// ungrouped digit string.
+func validateGroupedInt(raw, sep string) (string, bool) {
+	if raw == "" {
+		return "", true
+	}
+	if !strings.Contains(raw, sep) {
+		for _, r := range raw {
+			if !unicode.IsDigit(r) {
+				return "", false
+			}
+		}
+		return raw, true
+	}
+	parts := strings.Split(raw, sep)
+	if len(parts[0]) < 1 || len(parts[0]) > 3 {
+		return "", false
+	}
+	for _, r := range parts[0] {
+		if !unicode.IsDigit(r) {
+			return "", false
+		}
+	}
+	for _, p := range parts[1:] {
+		if len(p) != 3 {
+			return "", false
+		}
+		for _, r := range p {
+			if !unicode.IsDigit(r) {
+				return "", false
+			}
+		}
+	}
+	return strings.Join(parts, ""), true
 }
 
 // Format formats minor units using Greek/European grouping and comma decimal,

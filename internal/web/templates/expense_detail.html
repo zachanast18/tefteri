@@ -3,7 +3,7 @@
   <h1>{{.Expense.Merchant}}</h1>
   <div class="filter-actions">
     <a class="btn btn-secondary btn-sm" href="/expenses/{{.Expense.ID}}/edit">Edit</a>
-    <a class="btn btn-secondary btn-sm" href="/ledger">Back to Ledger</a>
+    <a class="btn btn-secondary btn-sm" href="{{if .ReturnURL}}{{.ReturnURL}}{{else}}/ledger{{end}}">Back to Ledger</a>
   </div>
 </div>
 

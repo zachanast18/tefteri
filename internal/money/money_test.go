@@ -23,6 +23,17 @@ func TestParsePositive(t *testing.T) {
 		{"abc", 0, true},
 		{"12,345", 1234500, false}, // 3 digits after single comma -> thousands
 		{"12,3456", 0, true},
+		{"12,3,4", 0, true},
+		{"1.2.3", 0, true},
+		{"1,23,456", 0, true},
+		{"1.234,56,78", 0, true},
+		{"1,234.56.78", 0, true},
+		{"1234,567", 0, true},
+		{"1,,2", 0, true},
+		{"1.234.567,89", 123456789, false},
+		{"1,234,567.89", 123456789, false},
+		{"99999999999999999,00", 0, true},
+		{"92233720368547758,08", 0, true},
 	}
 
 	for _, tc := range tests {

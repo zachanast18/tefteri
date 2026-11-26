@@ -31,8 +31,13 @@ type ReceiptDraft struct {
 	Merchant       string
 	PurchaseDate   string
 	AmountCents    int64
+	AmountRaw      string
 	PaymentMethod  string
 	CategoryID     int64
+	Kind           string
+	PaidByUserID   *int64
+	Note           string
+	SplitData      string
 	CheckMerchant  bool
 	CheckDate      bool
 	CheckAmount    bool
@@ -73,6 +78,7 @@ type ExpenseFilter struct {
 	PaymentMethod string
 	UserID        int64
 	Limit         int
+	Offset        int
 }
 
 type DuplicateMatch struct {
@@ -234,19 +240,21 @@ func (s *Store) CreateDraft(ctx context.Context, d ReceiptDraft) error {
 
 func (s *Store) GetDraft(ctx context.Context, householdID int64, id string) (ReceiptDraft, error) {
 	var d ReceiptDraft
-	var catID sql.NullInt64
+	var catID, paidByID sql.NullInt64
 	var cm, cd, ca, nr, encVer int
-	var mEnc, aEnc, eEnc []byte
+	var mEnc, aEnc, eEnc, nEnc, rawEnc, splitEnc []byte
 	err := s.DB.QueryRowContext(ctx, `
 		SELECT id, household_id, receipt_image_id, merchant, purchase_date, amount_cents,
-		       payment_method, category_id, check_merchant, check_date, check_amount,
+		       payment_method, category_id, kind, paid_by_user_id,
+		       check_merchant, check_date, check_amount,
 		       ocr_status, ocr_error, needs_review, review_reason,
-		       merchant_enc, amount_enc, ocr_error_enc, enc_version
+		       merchant_enc, amount_enc, ocr_error_enc, note_enc, amount_raw_enc, split_data_enc, enc_version
 		FROM receipt_drafts WHERE id = ? AND household_id = ?
 	`, id, householdID).Scan(
 		&d.ID, &d.HouseholdID, &d.ReceiptImageID, &d.Merchant, &d.PurchaseDate, &d.AmountCents,
-		&d.PaymentMethod, &catID, &cm, &cd, &ca, &d.OCRStatus, &d.OCRError, &nr, &d.ReviewReason,
-		&mEnc, &aEnc, &eEnc, &encVer,
+		&d.PaymentMethod, &catID, &d.Kind, &paidByID,
+		&cm, &cd, &ca, &d.OCRStatus, &d.OCRError, &nr, &d.ReviewReason,
+		&mEnc, &aEnc, &eEnc, &nEnc, &rawEnc, &splitEnc, &encVer,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return d, ErrNotFound
@@ -256,6 +264,13 @@ func (s *Store) GetDraft(ctx context.Context, householdID int64, id string) (Rec
 	}
 	if catID.Valid {
 		d.CategoryID = catID.Int64
+	}
+	if paidByID.Valid {
+		v := paidByID.Int64
+		d.PaidByUserID = &v
+	}
+	if d.Kind == "" {
+		d.Kind = "expense"
 	}
 	d.CheckMerchant = cm == 1
 	d.CheckDate = cd == 1
@@ -274,6 +289,21 @@ func (s *Store) GetDraft(ctx context.Context, householdID int64, id string) (Rec
 		}
 		if pt, err := crypto.Decrypt(dek, crypto.AAD(householdID, "receipt_drafts", d.ID, "ocr_error"), eEnc); err == nil {
 			d.OCRError = string(pt)
+		}
+		if len(nEnc) > 0 {
+			if pt, err := crypto.Decrypt(dek, crypto.AAD(householdID, "receipt_drafts", d.ID, "note"), nEnc); err == nil {
+				d.Note = string(pt)
+			}
+		}
+		if len(rawEnc) > 0 {
+			if pt, err := crypto.Decrypt(dek, crypto.AAD(householdID, "receipt_drafts", d.ID, "amount_raw"), rawEnc); err == nil {
+				d.AmountRaw = string(pt)
+			}
+		}
+		if len(splitEnc) > 0 {
+			if pt, err := crypto.Decrypt(dek, crypto.AAD(householdID, "receipt_drafts", d.ID, "split_data"), splitEnc); err == nil {
+				d.SplitData = string(pt)
+			}
 		}
 	}
 	return d, nil
@@ -631,10 +661,9 @@ func (s *Store) GetExpense(ctx context.Context, householdID, id int64) (Expense,
 	return e, nil
 }
 
-func (s *Store) ListExpenses(ctx context.Context, f ExpenseFilter) ([]Expense, error) {
+func buildExpenseWhere(f ExpenseFilter) (string, []any) {
 	var where []string
 	var args []any
-
 	if f.HouseholdID > 0 {
 		where = append(where, "e.household_id = ?")
 		args = append(args, f.HouseholdID)
@@ -656,9 +685,17 @@ func (s *Store) ListExpenses(ctx context.Context, f ExpenseFilter) ([]Expense, e
 		args = append(args, f.PaymentMethod)
 	}
 	if f.UserID > 0 {
-		where = append(where, "e.created_by_user_id = ?")
+		where = append(where, "e.paid_by_user_id = ?")
 		args = append(args, f.UserID)
 	}
+	if len(where) == 0 {
+		return "", args
+	}
+	return " WHERE " + strings.Join(where, " AND "), args
+}
+
+func (s *Store) ListExpenses(ctx context.Context, f ExpenseFilter) ([]Expense, error) {
+	whereSQL, args := buildExpenseWhere(f)
 
 	query := `
 		SELECT e.id, e.household_id, e.kind, e.amount_cents, e.merchant, e.normalized_merchant,
@@ -673,14 +710,14 @@ func (s *Store) ListExpenses(ctx context.Context, f ExpenseFilter) ([]Expense, e
 		JOIN categories c ON c.id = e.category_id
 		LEFT JOIN users u ON u.id = e.created_by_user_id
 		LEFT JOIN users up ON up.id = e.paid_by_user_id
-	`
-	if len(where) > 0 {
-		query += " WHERE " + strings.Join(where, " AND ")
-	}
-	query += " ORDER BY e.purchase_date DESC, e.id DESC"
+	` + whereSQL + " ORDER BY e.purchase_date DESC, e.id DESC"
 	if f.Limit > 0 && strings.TrimSpace(f.Merchant) == "" {
 		query += " LIMIT ?"
 		args = append(args, f.Limit)
+		if f.Offset > 0 {
+			query += " OFFSET ?"
+			args = append(args, f.Offset)
+		}
 	}
 
 	var dek []byte
@@ -696,63 +733,43 @@ func (s *Store) ListExpenses(ctx context.Context, f ExpenseFilter) ([]Expense, e
 	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
 
-	type rawExpense struct {
-		e          Expense
-		mEnc, nEnc []byte
-		aEnc       []byte
-		encVer     int
-	}
-	var rawList []rawExpense
+	merchantFilter := strings.ToLower(strings.TrimSpace(f.Merchant))
+	var out []Expense
 	for rows.Next() {
-		var r rawExpense
+		var e Expense
+		var mEnc, nEnc, aEnc []byte
+		var encVer int
 		var recID, userID, paidByID sql.NullInt64
 		if err := rows.Scan(
-			&r.e.ID, &r.e.HouseholdID, &r.e.Kind, &r.e.AmountCents, &r.e.Merchant, &r.e.NormalizedMerchant,
-			&r.e.PurchaseDate, &r.e.PaymentMethod, &r.e.CategoryID, &r.e.CategoryName,
-			&r.e.Note, &r.e.Source, &recID, &userID, &r.e.CreatedByName, &paidByID, &r.e.PaidByName,
-			&r.mEnc, &r.nEnc, &r.aEnc, &r.encVer, &r.e.CreatedAt, &r.e.UpdatedAt,
+			&e.ID, &e.HouseholdID, &e.Kind, &e.AmountCents, &e.Merchant, &e.NormalizedMerchant,
+			&e.PurchaseDate, &e.PaymentMethod, &e.CategoryID, &e.CategoryName,
+			&e.Note, &e.Source, &recID, &userID, &e.CreatedByName, &paidByID, &e.PaidByName,
+			&mEnc, &nEnc, &aEnc, &encVer, &e.CreatedAt, &e.UpdatedAt,
 		); err != nil {
-			rows.Close()
 			return nil, err
 		}
 		if recID.Valid {
 			v := recID.Int64
-			r.e.ReceiptImageID = &v
+			e.ReceiptImageID = &v
 		}
 		if userID.Valid {
 			v := userID.Int64
-			r.e.CreatedByUserID = &v
+			e.CreatedByUserID = &v
 		}
 		if paidByID.Valid {
 			v := paidByID.Int64
-			r.e.PaidByUserID = &v
+			e.PaidByUserID = &v
 		}
-		rawList = append(rawList, r)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	merchantFilter := strings.ToLower(strings.TrimSpace(f.Merchant))
-	var out []Expense
-	for _, r := range rawList {
-		e := r.e
-		if r.encVer == 1 {
-			if dek == nil || f.HouseholdID == 0 {
-				dek, err = s.EnsureHouseholdDEK(ctx, e.HouseholdID)
-				if err != nil {
-					return nil, err
-				}
-			}
-			if pt, err := crypto.Decrypt(dek, crypto.AAD(e.HouseholdID, "expenses", e.ID, "merchant"), r.mEnc); err == nil {
+		if encVer == 1 && dek != nil {
+			if pt, err := crypto.Decrypt(dek, crypto.AAD(e.HouseholdID, "expenses", e.ID, "merchant"), mEnc); err == nil {
 				e.Merchant = string(pt)
 			}
-			if pt, err := crypto.Decrypt(dek, crypto.AAD(e.HouseholdID, "expenses", e.ID, "note"), r.nEnc); err == nil {
+			if pt, err := crypto.Decrypt(dek, crypto.AAD(e.HouseholdID, "expenses", e.ID, "note"), nEnc); err == nil {
 				e.Note = string(pt)
 			}
-			if amt, err := crypto.DecryptInt64(dek, crypto.AAD(e.HouseholdID, "expenses", e.ID, "amount"), r.aEnc); err == nil {
+			if amt, err := crypto.DecryptInt64(dek, crypto.AAD(e.HouseholdID, "expenses", e.ID, "amount"), aEnc); err == nil {
 				e.AmountCents = amt
 			}
 		}
@@ -764,7 +781,98 @@ func (s *Store) ListExpenses(ctx context.Context, f ExpenseFilter) ([]Expense, e
 			break
 		}
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// ListExpensesPage returns a single page of matching expenses along with the
+// total matching count and full filtered net total in minor units.
+func (s *Store) ListExpensesPage(ctx context.Context, f ExpenseFilter, page, perPage int) ([]Expense, int, int64, error) {
+	if page < 1 {
+		page = 1
+	}
+	if perPage < 1 {
+		perPage = 50
+	}
+	if strings.TrimSpace(f.Merchant) != "" {
+		all, err := s.ListExpenses(ctx, f)
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		var netCents int64
+		for _, e := range all {
+			if e.Kind == "refund" {
+				netCents -= e.AmountCents
+			} else {
+				netCents += e.AmountCents
+			}
+		}
+		totalCount := len(all)
+		start := (page - 1) * perPage
+		if start >= totalCount {
+			return nil, totalCount, netCents, nil
+		}
+		end := start + perPage
+		if end > totalCount {
+			end = totalCount
+		}
+		return all[start:end], totalCount, netCents, nil
+	}
+
+	var dek []byte
+	if f.HouseholdID > 0 {
+		var err error
+		dek, err = s.EnsureHouseholdDEK(ctx, f.HouseholdID)
+		if err != nil {
+			return nil, 0, 0, err
+		}
+	}
+
+	whereSQL, args := buildExpenseWhere(f)
+	sumQuery := `SELECT e.id, e.household_id, e.kind, e.amount_cents, e.amount_enc, e.enc_version FROM expenses e` + whereSQL
+	rows, err := s.DB.QueryContext(ctx, sumQuery, args...)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	var totalCount int
+	var netCents int64
+	for rows.Next() {
+		var id, hhID, amt int64
+		var kind string
+		var aEnc []byte
+		var encVer int
+		if err := rows.Scan(&id, &hhID, &kind, &amt, &aEnc, &encVer); err != nil {
+			rows.Close()
+			return nil, 0, 0, err
+		}
+		if encVer == 1 && dek != nil {
+			if dec, err := crypto.DecryptInt64(dek, crypto.AAD(hhID, "expenses", id, "amount"), aEnc); err == nil {
+				amt = dec
+			}
+		}
+		totalCount++
+		if kind == "refund" {
+			netCents -= amt
+		} else {
+			netCents += amt
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, 0, 0, err
+	}
+	rows.Close()
+
+	pageFilter := f
+	pageFilter.Limit = perPage
+	pageFilter.Offset = (page - 1) * perPage
+	items, err := s.ListExpenses(ctx, pageFilter)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	return items, totalCount, netCents, nil
 }
 
 func (s *Store) CountAllExpenses(ctx context.Context, householdID int64) (int, error) {
