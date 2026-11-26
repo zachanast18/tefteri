@@ -185,6 +185,7 @@
       <div class="field">
         <label for="attachment">Receipt photo (optional)</label>
         <input id="attachment" name="attachment" type="file" accept="image/jpeg,image/png,image/*" capture="environment">
+        {{with index .Errors "attachment"}}<span class="field-error">{{.}}</span>{{end}}
       </div>
       {{end}}
 

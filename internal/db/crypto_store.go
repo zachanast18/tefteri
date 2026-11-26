@@ -199,6 +199,10 @@ func (s *Store) RotateHouseholdDEK(ctx context.Context, householdID int64) error
 	if err := reencryptSubscriptionsTx(ctx, tx, householdID, oldDEK, newDEK); err != nil {
 		return err
 	}
+	// 6. merchant_category_rules
+	if err := reencryptMerchantRulesTx(ctx, tx, householdID, oldDEK, newDEK); err != nil {
+		return err
+	}
 
 	nw, nv, err := s.Keys.WrapKey(newDEK, householdID)
 	if err != nil {
@@ -435,8 +439,8 @@ func migrateHouseholdPlaintextTx(ctx context.Context, tx *sql.Tx, hhID int64, de
 		}
 	}
 
-	// merchant_category_rules: convert plaintext normalized_merchant to BlindIndex if not 64-char hex
-	mcRows, err := tx.QueryContext(ctx, `SELECT normalized_merchant, category_id, updated_at FROM merchant_category_rules WHERE household_id = ? AND length(normalized_merchant) != 64`, hhID)
+	// merchant_category_rules: convert plaintext normalized_merchant to BlindIndex + merchant_enc
+	mcRows, err := tx.QueryContext(ctx, `SELECT normalized_merchant, category_id, updated_at FROM merchant_category_rules WHERE household_id = ? AND enc_version = 0`, hhID)
 	if err == nil {
 		type mcRow struct {
 			m, upd string
@@ -452,9 +456,14 @@ func migrateHouseholdPlaintextTx(ctx context.Context, tx *sql.Tx, hhID int64, de
 		}
 		mcRows.Close()
 		for _, m := range mcs {
+			if len(m.m) == 64 {
+				// Already blind-indexed prior to migration 006; mark enc_version=0 as unrecoverable if no merchant_enc.
+				continue
+			}
 			hm := crypto.BlindIndex(dek, "merchant", m.m)
+			mEnc, _ := crypto.Encrypt(dek, crypto.AAD(hhID, "merchant_category_rules", m.cid, "merchant"), []byte(m.m))
 			_, _ = tx.ExecContext(ctx, `DELETE FROM merchant_category_rules WHERE household_id = ? AND normalized_merchant = ?`, hhID, m.m)
-			_, _ = tx.ExecContext(ctx, `INSERT OR REPLACE INTO merchant_category_rules (household_id, normalized_merchant, category_id, updated_at) VALUES (?, ?, ?, ?)`, hhID, hm, m.cid, m.upd)
+			_, _ = tx.ExecContext(ctx, `INSERT OR REPLACE INTO merchant_category_rules (household_id, normalized_merchant, category_id, merchant_enc, enc_version, updated_at) VALUES (?, ?, ?, ?, 1, ?)`, hhID, hm, m.cid, mEnc, m.upd)
 		}
 	}
 
@@ -679,6 +688,94 @@ func reencryptSubscriptionsTx(ctx context.Context, tx *sql.Tx, hhID int64, oldDE
 		nNew, _ := crypto.Encrypt(newDEK, crypto.AAD(hhID, "subscriptions", x.id, "name"), nPt)
 		aNew, _ := crypto.EncryptInt64(newDEK, crypto.AAD(hhID, "subscriptions", x.id, "amount"), aPt)
 		if _, err := tx.ExecContext(ctx, `UPDATE subscriptions SET name_enc = ?, amount_enc = ? WHERE id = ?`, nNew, aNew, x.id); err != nil {
+			return err
+		}
+	}
+
+	// Also re-encrypt paid subscription_occurrences.
+	occRows, err := tx.QueryContext(ctx, `
+		SELECT o.id, o.subscription_id, o.scheduled_date, o.paid_amount_enc
+		FROM subscription_occurrences o
+		JOIN subscriptions s ON s.id = o.subscription_id
+		WHERE s.household_id = ? AND o.enc_version = 1 AND o.paid_amount_enc IS NOT NULL
+	`, hhID)
+	if err != nil {
+		return err
+	}
+	type occItem struct {
+		id    int64
+		subID int64
+		sdate string
+		ct    []byte
+	}
+	var occList []occItem
+	for occRows.Next() {
+		var x occItem
+		if err := occRows.Scan(&x.id, &x.subID, &x.sdate, &x.ct); err != nil {
+			occRows.Close()
+			return err
+		}
+		occList = append(occList, x)
+	}
+	occRows.Close()
+	for _, x := range occList {
+		aad := crypto.AAD(hhID, "subscription_occurrences", fmt.Sprintf("%d:%s", x.subID, x.sdate), "paid_amount")
+		pt, err := crypto.DecryptInt64(oldDEK, aad, x.ct)
+		if err != nil {
+			return err
+		}
+		nct, err := crypto.EncryptInt64(newDEK, aad, pt)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE subscription_occurrences SET paid_amount_enc = ? WHERE id = ?`, nct, x.id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func reencryptMerchantRulesTx(ctx context.Context, tx *sql.Tx, hhID int64, oldDEK, newDEK []byte) error {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT normalized_merchant, category_id, merchant_enc, updated_at
+		FROM merchant_category_rules
+		WHERE household_id = ? AND enc_version = 1 AND merchant_enc IS NOT NULL
+	`, hhID)
+	if err != nil {
+		return err
+	}
+	type item struct {
+		oldHM, upd string
+		cid        int64
+		mEnc       []byte
+	}
+	var list []item
+	for rows.Next() {
+		var x item
+		if err := rows.Scan(&x.oldHM, &x.cid, &x.mEnc, &x.upd); err != nil {
+			rows.Close()
+			return err
+		}
+		list = append(list, x)
+	}
+	rows.Close()
+	for _, x := range list {
+		normBytes, err := crypto.Decrypt(oldDEK, crypto.AAD(hhID, "merchant_category_rules", x.cid, "merchant"), x.mEnc)
+		if err != nil {
+			return err
+		}
+		newHM := crypto.BlindIndex(newDEK, "merchant", string(normBytes))
+		newMEnc, err := crypto.Encrypt(newDEK, crypto.AAD(hhID, "merchant_category_rules", x.cid, "merchant"), normBytes)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM merchant_category_rules WHERE household_id = ? AND normalized_merchant = ?`, hhID, x.oldHM); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO merchant_category_rules (household_id, normalized_merchant, category_id, merchant_enc, enc_version, updated_at)
+			VALUES (?, ?, ?, ?, 1, ?)
+		`, hhID, newHM, x.cid, newMEnc, x.upd); err != nil {
 			return err
 		}
 	}

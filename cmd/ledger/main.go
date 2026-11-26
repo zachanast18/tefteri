@@ -41,6 +41,11 @@ func main() {
 		runHealthcheck(cfg)
 	case "setup-account":
 		runSetupAccount(cfg)
+	case "reset-password":
+		if len(os.Args) < 3 {
+			log.Fatalf("usage: ledger reset-password <username>")
+		}
+		runResetPassword(cfg, os.Args[2])
 	case "backup":
 		if len(os.Args) < 3 {
 			log.Fatalf("usage: ledger backup <dest-file>")
@@ -98,6 +103,14 @@ func runSetupAccount(cfg config.Config) {
 	store := openConfiguredStore(cfg)
 	defer store.Close()
 
+	hasUser, err := store.HasUser(context.Background())
+	if err != nil {
+		log.Fatalf("check users: %v", err)
+	}
+	if hasUser {
+		log.Fatalf("%v", db.ErrAlreadyInitialized)
+	}
+
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Print("Household username [household]: ")
 	username, _ := reader.ReadString('\n')
@@ -130,7 +143,7 @@ func runSetupAccount(cfg config.Config) {
 	if err != nil {
 		log.Fatalf("hash password: %v", err)
 	}
-	if err := store.UpsertUser(context.Background(), username, hash); err != nil {
+	if err := store.CreateInitialUser(context.Background(), username, hash); err != nil {
 		log.Fatalf("save account: %v", err)
 	}
 	fmt.Printf("Household account %q saved.\n", username)
@@ -147,6 +160,39 @@ func runSetupAccount(cfg config.Config) {
 			}
 		}
 	}
+}
+
+func runResetPassword(cfg config.Config, username string) {
+	store := openConfiguredStore(cfg)
+	defer store.Close()
+
+	u, err := store.GetUserByUsername(context.Background(), username)
+	if err != nil {
+		log.Fatalf("user %q not found", username)
+	}
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Printf("New password for %s (hidden): ", u.Username)
+	p1, err := readPasswordLine(reader)
+	fmt.Println()
+	if err != nil || len(p1) < 8 {
+		log.Fatalf("password must be at least 8 characters")
+	}
+	fmt.Print("Confirm password (hidden): ")
+	p2, err := readPasswordLine(reader)
+	fmt.Println()
+	if err != nil || p1 != p2 {
+		log.Fatalf("passwords do not match")
+	}
+	hash, err := auth.HashPassword(p1)
+	if err != nil {
+		log.Fatalf("hash password: %v", err)
+	}
+	if err := store.UpdateUserPassword(context.Background(), u.ID, hash); err != nil {
+		log.Fatalf("update password: %v", err)
+	}
+	_ = store.DeleteAllUserSessions(context.Background(), u.ID)
+	_ = store.LogAudit(context.Background(), "password_reset_cli", &u.ID, nil, "")
+	fmt.Printf("Password updated and all sessions revoked for %q.\n", u.Username)
 }
 
 func readPasswordLine(r *bufio.Reader) (string, error) {

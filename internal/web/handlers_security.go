@@ -489,27 +489,39 @@ func (s *Server) handleWebAuthnLoginFinish(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	chID := r.URL.Query().Get("challenge_id")
-	sd, _, err := s.store.ConsumeWebAuthnChallenge(r.Context(), chID, "login", s.nowFn())
+	sd, uidPtr, err := s.store.ConsumeWebAuthnChallenge(r.Context(), chID, "login", s.nowFn())
 	if err != nil {
 		http.Error(w, "invalid or expired challenge", http.StatusBadRequest)
 		return
 	}
 
 	var matchedUser db.User
-	cred, err := s.webauthn.FinishDiscoverableLogin(func(rawID, userHandle []byte) (webauthn.User, error) {
-		if len(userHandle) != 8 {
-			return nil, db.ErrNotFound
-		}
-		uid := int64(userHandle[0])<<56 | int64(userHandle[1])<<48 | int64(userHandle[2])<<40 | int64(userHandle[3])<<32 |
-			int64(userHandle[4])<<24 | int64(userHandle[5])<<16 | int64(userHandle[6])<<8 | int64(userHandle[7])
-		u, err := s.store.GetUserByID(r.Context(), uid)
-		if err != nil {
-			return nil, err
+	var cred *webauthn.Credential
+	if uidPtr != nil {
+		u, uErr := s.store.GetUserByID(r.Context(), *uidPtr)
+		if uErr != nil {
+			http.Error(w, "unknown user", http.StatusUnauthorized)
+			return
 		}
 		matchedUser = u
 		creds, _, _ := s.store.ListWebAuthnCredentials(r.Context(), u.ID)
-		return waUser{user: u, creds: creds}, nil
-	}, sd, r)
+		cred, err = s.webauthn.FinishLogin(waUser{user: u, creds: creds}, sd, r)
+	} else {
+		cred, err = s.webauthn.FinishDiscoverableLogin(func(rawID, userHandle []byte) (webauthn.User, error) {
+			if len(userHandle) != 8 {
+				return nil, db.ErrNotFound
+			}
+			uid := int64(userHandle[0])<<56 | int64(userHandle[1])<<48 | int64(userHandle[2])<<40 | int64(userHandle[3])<<32 |
+				int64(userHandle[4])<<24 | int64(userHandle[5])<<16 | int64(userHandle[6])<<8 | int64(userHandle[7])
+			u, err := s.store.GetUserByID(r.Context(), uid)
+			if err != nil {
+				return nil, err
+			}
+			matchedUser = u
+			creds, _, _ := s.store.ListWebAuthnCredentials(r.Context(), u.ID)
+			return waUser{user: u, creds: creds}, nil
+		}, sd, r)
+	}
 	if err != nil {
 		http.Error(w, "passkey login failed", http.StatusUnauthorized)
 		return

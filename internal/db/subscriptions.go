@@ -500,14 +500,18 @@ func (s *Store) ListRecentOccurrences(ctx context.Context, householdID int64, li
 			return nil, err
 		}
 		if sEv == 1 {
-			if pt, err := crypto.Decrypt(dek, crypto.AAD(householdID, "subscriptions", o.SubscriptionID, "name"), sNameEnc); err == nil {
-				o.SubName = string(pt)
+			pt, err := crypto.Decrypt(dek, crypto.AAD(householdID, "subscriptions", o.SubscriptionID, "name"), sNameEnc)
+			if err != nil {
+				return nil, err
 			}
+			o.SubName = string(pt)
 		}
 		if oEv == 1 && len(paidEnc) > 0 {
-			if amt, err := crypto.DecryptInt64(dek, crypto.AAD(householdID, "subscription_occurrences", fmt.Sprintf("%d:%s", o.SubscriptionID, o.ScheduledDate), "paid_amount"), paidEnc); err == nil {
-				o.PaidAmountCents = &amt
+			amt, err := crypto.DecryptInt64(dek, crypto.AAD(householdID, "subscription_occurrences", fmt.Sprintf("%d:%s", o.SubscriptionID, o.ScheduledDate), "paid_amount"), paidEnc)
+			if err != nil {
+				return nil, err
 			}
+			o.PaidAmountCents = &amt
 		} else if paidCents.Valid {
 			v := paidCents.Int64
 			o.PaidAmountCents = &v

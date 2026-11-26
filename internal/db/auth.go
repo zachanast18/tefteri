@@ -32,6 +32,67 @@ func (u User) Label() string {
 	return u.Username
 }
 
+var ErrAlreadyInitialized = errors.New("initial account already exists; use reset-password or the Household UI instead")
+
+// CreateInitialUser atomically creates the first user and default household only when no users exist.
+func (s *Store) CreateInitialUser(ctx context.Context, username, passwordHash string) error {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return errors.New("username is required")
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM users`).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return ErrAlreadyInitialized
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	res, err := tx.ExecContext(ctx, `
+		INSERT INTO users (username, display_name, password_hash, is_instance_admin, created_at)
+		VALUES (?, ?, ?, 1, ?)
+	`, username, username, passwordHash, now)
+	if err != nil {
+		return err
+	}
+	uid, _ := res.LastInsertId()
+
+	var h1 int
+	_ = tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM households WHERE id = 1`).Scan(&h1)
+	hhID := int64(1)
+	if h1 == 0 {
+		hRes, err := tx.ExecContext(ctx, `INSERT INTO households (name, created_at) VALUES ('Our Household', ?)`, now)
+		if err != nil {
+			return err
+		}
+		hhID, _ = hRes.LastInsertId()
+		for _, c := range defaultCategories {
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO categories (household_id, name, sort_order, is_default) VALUES (?, ?, ?, 1)
+			`, hhID, c.name, c.sort); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := s.ensureDEKTx(ctx, tx, hhID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO household_members (household_id, user_id, role, created_at) VALUES (?, ?, 'owner', ?)
+	`, hhID, uid, now); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
 func (s *Store) HasUser(ctx context.Context) (bool, error) {
 	var n int
 	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(1) FROM users`).Scan(&n)

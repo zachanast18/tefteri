@@ -35,20 +35,27 @@ Works on any Linux, macOS, or Windows host with Docker and the Compose plugin:
    git clone https://github.com/zachanast18/tefteri.git
    cd tefteri
    cp .env.example .env
+   chmod 600 .env
    ```
 
-2. Build the image and create your first household account interactively (password is read without echoing):
+2. Generate the required 256-bit server wrapping key (`MASTER_KEY`) and set it in `.env` (keep a separate offline copy for restores):
+   ```bash
+   echo "MASTER_KEY=v1:$(openssl rand -base64 32)"
+   ```
+   Set the `MASTER_KEY=` line in `.env` to that `v1:...` output. (Alternatively, store it in a restricted file and mount it at `/run/secrets/tefteri_master_key` with `MASTER_KEY_FILE=/run/secrets/tefteri_master_key`.)
+
+3. Build the image and run the first-time account setup (password is read without echoing; prints 8 single-use recovery codes to save offline):
    ```bash
    docker compose build
    docker compose run --rm app setup-account
    ```
 
-3. Start the service in the background:
+4. Start the service in the background:
    ```bash
-   docker compose up -d --build
+   docker compose up -d
    ```
 
-4. Check health and open the app:
+5. Check health and open the app:
    ```bash
    docker compose ps
    ```

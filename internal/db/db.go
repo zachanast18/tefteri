@@ -235,11 +235,19 @@ func (s *Store) RememberMerchantCategory(ctx context.Context, householdID int64,
 		return err
 	}
 	hm := crypto.BlindIndex(dek, "merchant", norm)
+	mEnc, err := crypto.Encrypt(dek, crypto.AAD(householdID, "merchant_category_rules", categoryID, "merchant"), []byte(norm))
+	if err != nil {
+		return err
+	}
 	_, err = s.DB.ExecContext(ctx, `
-		INSERT INTO merchant_category_rules (household_id, normalized_merchant, category_id, updated_at)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(household_id, normalized_merchant) DO UPDATE SET category_id = excluded.category_id, updated_at = excluded.updated_at
-	`, householdID, hm, categoryID, time.Now().UTC().Format(time.RFC3339))
+		INSERT INTO merchant_category_rules (household_id, normalized_merchant, category_id, merchant_enc, enc_version, updated_at)
+		VALUES (?, ?, ?, ?, 1, ?)
+		ON CONFLICT(household_id, normalized_merchant) DO UPDATE SET
+			category_id = excluded.category_id,
+			merchant_enc = excluded.merchant_enc,
+			enc_version = 1,
+			updated_at = excluded.updated_at
+	`, householdID, hm, categoryID, mEnc, time.Now().UTC().Format(time.RFC3339))
 	return err
 }
 

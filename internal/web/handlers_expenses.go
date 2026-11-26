@@ -20,9 +20,11 @@ import (
 
 type scanPageData struct {
 	BasePage
-	MaxUploadMB  int64
-	OCRLanguages string
-	Error        string
+	FormHouseholdID   int64
+	FormHouseholdName string
+	MaxUploadMB       int64
+	OCRLanguages      string
+	Error             string
 }
 
 type expenseFormData struct {
@@ -62,22 +64,52 @@ type expenseFormData struct {
 	Duplicates       []db.DuplicateMatch
 }
 
+func (s *Server) resolveSubmittedHousehold(r *http.Request, u db.User) (int64, string, bool) {
+	raw := strings.TrimSpace(r.FormValue("household_id"))
+	if raw == "" {
+		if u.ActiveHouseholdID <= 0 {
+			return 0, "", false
+		}
+		return u.ActiveHouseholdID, u.ActiveHouseholdName, true
+	}
+	formHH, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || formHH <= 0 {
+		return 0, "", false
+	}
+	hhs, err := s.store.ListUserHouseholds(r.Context(), u.ID)
+	if err != nil {
+		return 0, "", false
+	}
+	for _, h := range hhs {
+		if h.ID == formHH {
+			return h.ID, h.Name, true
+		}
+	}
+	return 0, "", false
+}
+
 func (s *Server) handleScanGet(w http.ResponseWriter, r *http.Request) {
+	u, _ := s.currentUser(r)
 	s.render(w, r, "scan.html", http.StatusOK, scanPageData{
-		BasePage:     s.newBasePage(w, r, "Scan receipt", "overview", true),
-		MaxUploadMB:  s.cfg.MaxUploadBytes / (1024 * 1024),
-		OCRLanguages: s.cfg.OCRLanguages,
+		BasePage:          s.newBasePage(w, r, "Scan receipt", "overview", true),
+		FormHouseholdID:   u.ActiveHouseholdID,
+		FormHouseholdName: u.ActiveHouseholdName,
+		MaxUploadMB:       s.cfg.MaxUploadBytes / (1024 * 1024),
+		OCRLanguages:      s.cfg.OCRLanguages,
 	})
 }
 
 func (s *Server) handleScanPost(w http.ResponseWriter, r *http.Request) {
+	u, _ := s.currentUser(r)
 	r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxUploadBytes+64*1024)
 	if err := r.ParseMultipartForm(s.cfg.MaxUploadBytes); err != nil {
 		s.render(w, r, "scan.html", http.StatusBadRequest, scanPageData{
-			BasePage:     s.newBasePage(w, r, "Scan receipt", "overview", true),
-			MaxUploadMB:  s.cfg.MaxUploadBytes / (1024 * 1024),
-			OCRLanguages: s.cfg.OCRLanguages,
-			Error:        "Upload too large or invalid form data.",
+			BasePage:          s.newBasePage(w, r, "Scan receipt", "overview", true),
+			FormHouseholdID:   u.ActiveHouseholdID,
+			FormHouseholdName: u.ActiveHouseholdName,
+			MaxUploadMB:       s.cfg.MaxUploadBytes / (1024 * 1024),
+			OCRLanguages:      s.cfg.OCRLanguages,
+			Error:             "Upload too large or invalid form data.",
 		})
 		return
 	}
@@ -86,13 +118,21 @@ func (s *Server) handleScanPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	hhID, hhName, ok := s.resolveSubmittedHousehold(r, u)
+	if !ok {
+		http.Error(w, "you are no longer a member of that household", http.StatusForbidden)
+		return
+	}
+
 	file, _, err := r.FormFile("receipt")
 	if err != nil {
 		s.render(w, r, "scan.html", http.StatusBadRequest, scanPageData{
-			BasePage:     s.newBasePage(w, r, "Scan receipt", "overview", true),
-			MaxUploadMB:  s.cfg.MaxUploadBytes / (1024 * 1024),
-			OCRLanguages: s.cfg.OCRLanguages,
-			Error:        "Please choose or take a receipt photo first.",
+			BasePage:          s.newBasePage(w, r, "Scan receipt", "overview", true),
+			FormHouseholdID:   hhID,
+			FormHouseholdName: hhName,
+			MaxUploadMB:       s.cfg.MaxUploadBytes / (1024 * 1024),
+			OCRLanguages:      s.cfg.OCRLanguages,
+			Error:             "Please choose or take a receipt photo first.",
 		})
 		return
 	}
@@ -101,36 +141,40 @@ func (s *Server) handleScanPost(w http.ResponseWriter, r *http.Request) {
 	proc, err := imageproc.Process(file, s.cfg.MaxUploadBytes, s.cfg.MaxImageDim, s.cfg.MaxStoredDim)
 	if err != nil {
 		s.render(w, r, "scan.html", http.StatusBadRequest, scanPageData{
-			BasePage:     s.newBasePage(w, r, "Scan receipt", "overview", true),
-			MaxUploadMB:  s.cfg.MaxUploadBytes / (1024 * 1024),
-			OCRLanguages: s.cfg.OCRLanguages,
-			Error:        err.Error(),
+			BasePage:          s.newBasePage(w, r, "Scan receipt", "overview", true),
+			FormHouseholdID:   hhID,
+			FormHouseholdName: hhName,
+			MaxUploadMB:       s.cfg.MaxUploadBytes / (1024 * 1024),
+			OCRLanguages:      s.cfg.OCRLanguages,
+			Error:             err.Error(),
 		})
 		return
 	}
 
-	u, _ := s.currentUser(r)
-	hhID := u.ActiveHouseholdID
 	if !s.limiter.Allow(fmt.Sprintf("upload:%d", hhID), 20, 10*time.Minute, s.nowFn()) {
 		s.render(w, r, "scan.html", http.StatusTooManyRequests, scanPageData{
-			BasePage:     s.newBasePage(w, r, "Scan receipt", "overview", true),
-			MaxUploadMB:  s.cfg.MaxUploadBytes / (1024 * 1024),
-			OCRLanguages: s.cfg.OCRLanguages,
-			Error:        "Too many uploads in a short time. Wait a few minutes or enter manually.",
-		})
-		return
-	}
-	if usedBytes, err := s.store.GetHouseholdReceiptBytes(r.Context(), hhID); err == nil && usedBytes+int64(len(proc.Data)) > s.cfg.MaxHouseholdQuotaBytes {
-		s.render(w, r, "scan.html", http.StatusRequestEntityTooLarge, scanPageData{
-			BasePage:     s.newBasePage(w, r, "Scan receipt", "overview", true),
-			MaxUploadMB:  s.cfg.MaxUploadBytes / (1024 * 1024),
-			OCRLanguages: s.cfg.OCRLanguages,
-			Error:        "Household receipt storage quota reached. Enter expense manually or delete old receipts.",
+			BasePage:          s.newBasePage(w, r, "Scan receipt", "overview", true),
+			FormHouseholdID:   hhID,
+			FormHouseholdName: hhName,
+			MaxUploadMB:       s.cfg.MaxUploadBytes / (1024 * 1024),
+			OCRLanguages:      s.cfg.OCRLanguages,
+			Error:             "Too many uploads in a short time. Wait a few minutes or enter manually.",
 		})
 		return
 	}
 
-	imgID, err := s.store.SaveReceiptImage(r.Context(), hhID, proc.SHA256, proc.MimeType, proc.Width, proc.Height, proc.Data)
+	imgID, err := s.store.SaveReceiptImageWithQuota(r.Context(), hhID, s.cfg.MaxHouseholdQuotaBytes, proc.SHA256, proc.MimeType, proc.Width, proc.Height, proc.Data)
+	if errors.Is(err, db.ErrQuotaExceeded) {
+		s.render(w, r, "scan.html", http.StatusRequestEntityTooLarge, scanPageData{
+			BasePage:          s.newBasePage(w, r, "Scan receipt", "overview", true),
+			FormHouseholdID:   hhID,
+			FormHouseholdName: hhName,
+			MaxUploadMB:       s.cfg.MaxUploadBytes / (1024 * 1024),
+			OCRLanguages:      s.cfg.OCRLanguages,
+			Error:             "Household receipt storage quota reached. Enter expense manually or delete old receipts.",
+		})
+		return
+	}
 	if err != nil {
 		http.Error(w, "failed to store receipt image", http.StatusInternalServerError)
 		return
@@ -292,35 +336,38 @@ func (s *Server) handleExpenseCreatePost(w http.ResponseWriter, r *http.Request)
 	}
 
 	u, ok := s.currentUser(r)
-	hhID := u.ActiveHouseholdID
-	hhName := u.ActiveHouseholdName
-	// Preserve draft's household if user switched households in another tab,
-	// verifying current membership on the server.
-	if formHH, err := strconv.ParseInt(r.FormValue("household_id"), 10, 64); err == nil && formHH > 0 && formHH != hhID {
-		if hhs, err := s.store.ListUserHouseholds(r.Context(), u.ID); err == nil {
-			for _, h := range hhs {
-				if h.ID == formHH {
-					hhID = h.ID
-					hhName = h.Name
-					break
-				}
-			}
-		}
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	hhID, hhName, memberOK := s.resolveSubmittedHousehold(r, u)
+	if !memberOK {
+		http.Error(w, "you are no longer a member of that household", http.StatusForbidden)
+		return
 	}
 	cats, _ := s.store.ListCategories(r.Context(), hhID)
 	members, _ := s.store.ListHouseholdMembers(r.Context(), hhID)
 	draftID := strings.TrimSpace(r.FormValue("draft_id"))
 	recIDVal, _ := strconv.ParseInt(r.FormValue("receipt_image_id"), 10, 64)
 
-	// Handle optional attachment uploaded directly on manual form.
+	var attachmentErr string
+	// Handle optional attachment uploaded directly on manual form with atomic quota enforcement.
 	if recIDVal == 0 {
 		if file, _, err := r.FormFile("attachment"); err == nil {
 			defer file.Close()
-			if proc, err := imageproc.Process(file, s.cfg.MaxUploadBytes, s.cfg.MaxImageDim, s.cfg.MaxStoredDim); err == nil {
-				if id, err := s.store.SaveReceiptImage(r.Context(), hhID, proc.SHA256, proc.MimeType, proc.Width, proc.Height, proc.Data); err == nil {
+			proc, procErr := imageproc.Process(file, s.cfg.MaxUploadBytes, s.cfg.MaxImageDim, s.cfg.MaxStoredDim)
+			if procErr != nil {
+				attachmentErr = procErr.Error()
+			} else {
+				id, saveErr := s.store.SaveReceiptImageWithQuota(r.Context(), hhID, s.cfg.MaxHouseholdQuotaBytes, proc.SHA256, proc.MimeType, proc.Width, proc.Height, proc.Data)
+				if saveErr != nil {
+					attachmentErr = saveErr.Error()
+				} else {
 					recIDVal = id
 				}
 			}
+		} else if !errors.Is(err, http.ErrMissingFile) {
+			attachmentErr = "Could not read attached photo."
 		}
 	}
 
@@ -417,6 +464,9 @@ func (s *Server) handleExpenseCreatePost(w http.ResponseWriter, r *http.Request)
 	}
 	if catID <= 0 {
 		data.Errors["category_id"] = "Choose a category."
+	}
+	if attachmentErr != "" {
+		data.Errors["attachment"] = attachmentErr
 	}
 
 	var splits []db.ExpenseSplit

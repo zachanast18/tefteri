@@ -1,6 +1,11 @@
 {{define "content"}}
 <div class="page-head">
-  <h1>Scan receipt</h1>
+  <div>
+    <h1>Scan receipt</h1>
+    {{if gt (len .Households) 1}}
+    <div class="muted" style="font-size: 0.875rem;">Household: <strong>{{.FormHouseholdName}}</strong></div>
+    {{end}}
+  </div>
   <a class="btn btn-secondary btn-sm" href="/expenses/new">Enter manually</a>
 </div>
 
@@ -16,6 +21,7 @@
 
 <form id="scan-form" class="panel form-stack" method="POST" action="/scan" enctype="multipart/form-data">
   <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <input type="hidden" name="household_id" value="{{.FormHouseholdID}}">
 
   <div class="field">
     <label for="receipt-file-input">Receipt photo (JPEG or PNG)</label>

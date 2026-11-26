@@ -116,7 +116,13 @@ func (s *Store) GetHouseholdReceiptBytes(ctx context.Context, householdID int64)
 	return total, err
 }
 
+var ErrQuotaExceeded = errors.New("household receipt storage quota reached")
+
 func (s *Store) SaveReceiptImage(ctx context.Context, householdID int64, sha256Hex, mimeType string, width, height int, data []byte) (int64, error) {
+	return s.SaveReceiptImageWithQuota(ctx, householdID, 0, sha256Hex, mimeType, width, height, data)
+}
+
+func (s *Store) SaveReceiptImageWithQuota(ctx context.Context, householdID, maxQuotaBytes int64, sha256Hex, mimeType string, width, height int, data []byte) (int64, error) {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -128,6 +134,7 @@ func (s *Store) SaveReceiptImage(ctx context.Context, householdID int64, sha256H
 		return 0, err
 	}
 
+	// Encrypt first so quota check counts the actual ciphertext bytes to be stored.
 	now := time.Now().UTC().Format(time.RFC3339)
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO receipt_images (household_id, sha256, mime_type, width, height, data, enc_version, created_at)
@@ -142,6 +149,20 @@ func (s *Store) SaveReceiptImage(ctx context.Context, householdID int64, sha256H
 	if err != nil {
 		return 0, err
 	}
+
+	if maxQuotaBytes > 0 {
+		var used int64
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COALESCE(SUM(length(data) + COALESCE(length(data_enc), 0)), 0)
+			FROM receipt_images WHERE household_id = ?
+		`, householdID).Scan(&used); err != nil {
+			return 0, err
+		}
+		if used+int64(len(ct)) > maxQuotaBytes {
+			return 0, ErrQuotaExceeded
+		}
+	}
+
 	if _, err := tx.ExecContext(ctx, `UPDATE receipt_images SET data_enc = ? WHERE id = ?`, ct, id); err != nil {
 		return 0, err
 	}
@@ -439,11 +460,16 @@ func (s *Store) SaveExpense(ctx context.Context, in SaveExpenseInput) (int64, er
 	}
 
 	if in.RememberMerchant && norm != "" {
+		mrEnc, _ := crypto.Encrypt(dek, crypto.AAD(in.HouseholdID, "merchant_category_rules", in.CategoryID, "merchant"), []byte(norm))
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO merchant_category_rules (household_id, normalized_merchant, category_id, updated_at)
-			VALUES (?, ?, ?, ?)
-			ON CONFLICT(household_id, normalized_merchant) DO UPDATE SET category_id = excluded.category_id, updated_at = excluded.updated_at
-		`, in.HouseholdID, hm, in.CategoryID, now); err != nil {
+			INSERT INTO merchant_category_rules (household_id, normalized_merchant, category_id, merchant_enc, enc_version, updated_at)
+			VALUES (?, ?, ?, ?, 1, ?)
+			ON CONFLICT(household_id, normalized_merchant) DO UPDATE SET
+				category_id = excluded.category_id,
+				merchant_enc = excluded.merchant_enc,
+				enc_version = 1,
+				updated_at = excluded.updated_at
+		`, in.HouseholdID, hm, in.CategoryID, mrEnc, now); err != nil {
 			return 0, err
 		}
 	}
@@ -513,11 +539,16 @@ func (s *Store) UpdateExpense(ctx context.Context, householdID, id int64, in Sav
 	}
 
 	if in.RememberMerchant && norm != "" {
+		mrEnc, _ := crypto.Encrypt(dek, crypto.AAD(householdID, "merchant_category_rules", in.CategoryID, "merchant"), []byte(norm))
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO merchant_category_rules (household_id, normalized_merchant, category_id, updated_at)
-			VALUES (?, ?, ?, ?)
-			ON CONFLICT(household_id, normalized_merchant) DO UPDATE SET category_id = excluded.category_id, updated_at = excluded.updated_at
-		`, householdID, hm, in.CategoryID, now); err != nil {
+			INSERT INTO merchant_category_rules (household_id, normalized_merchant, category_id, merchant_enc, enc_version, updated_at)
+			VALUES (?, ?, ?, ?, 1, ?)
+			ON CONFLICT(household_id, normalized_merchant) DO UPDATE SET
+				category_id = excluded.category_id,
+				merchant_enc = excluded.merchant_enc,
+				enc_version = 1,
+				updated_at = excluded.updated_at
+		`, householdID, hm, in.CategoryID, mrEnc, now); err != nil {
 			return err
 		}
 	}

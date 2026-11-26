@@ -63,14 +63,19 @@ docker compose exec app rm -f /data/backup.db
 ```
 
 ### Restore to a clean VM
-1. Provision the new Docker host with `compose.yaml`, `.env` (including the **same** `MASTER_KEY` / `MASTER_KEY_FILE`, `WEBAUTHN_RP_ID`, and `WEBAUTHN_RP_ORIGIN`).
-2. Restore the database into the named volume:
+1. Provision the new Docker host with `compose.yaml`, `compose.restore.yaml`, and `.env` (including the **same** `MASTER_KEY` / `MASTER_KEY_FILE`, `WEBAUTHN_RP_ID`, and `WEBAUTHN_RP_ORIGIN`).
+2. Restore the database into `tefteri_restore_data`, making `/data` writable by UID `10001` so SQLite can create WAL/SHM journal files:
    ```bash
    docker volume create tefteri_restore_data
    docker run --rm -v tefteri_restore_data:/data -v "$PWD":/backup debian:bookworm-slim \
-     sh -c "cp /backup/tefteri-backup-YYYY-MM-DD.db /data/ledger.db && chown 10001:10001 /data/ledger.db"
+     sh -c "cp /backup/tefteri-backup-YYYY-MM-DD.db /data/ledger.db && chown -R 10001:10001 /data && chmod 750 /data && chmod 640 /data/ledger.db"
    ```
-3. Start the app, sign in on the configured HTTPS domain, open a receipt, and reconcile household totals.
+3. Verify the effective volume mount and start using the restore override:
+   ```bash
+   docker compose -f compose.yaml -f compose.restore.yaml config | grep -A3 ledger_data
+   docker compose -f compose.yaml -f compose.restore.yaml up -d
+   ```
+4. Sign in on the configured HTTPS domain, open a receipt, reconcile household totals, and verify a new expense survives `docker compose -f compose.yaml -f compose.restore.yaml restart`.
 
 ## 5. Incident & Member Revocation
 
