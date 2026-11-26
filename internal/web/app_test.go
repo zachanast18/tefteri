@@ -54,13 +54,18 @@ func newTestApp(t *testing.T, tesseractBin string) (*Server, *db.Store, string) 
 		Location:        loc,
 		OCRLanguages:    "ell+eng",
 		OCRTimeout:      5 * time.Second,
-		MaxUploadBytes:  12 * 1024 * 1024,
-		MaxImageDim:     6000,
-		MaxStoredDim:    1600,
-		SessionTTL:      24 * time.Hour,
-		CookieSecure:    "false",
-		TesseractBin:    tesseractBin,
-		TesseractThread: 1,
+		MaxUploadBytes:         12 * 1024 * 1024,
+		MaxImageDim:            6000,
+		MaxStoredDim:           1600,
+		MaxHouseholdQuotaBytes: 250 * 1024 * 1024,
+		SessionTTL:             24 * time.Hour,
+		SessionIdleTTL:         24 * time.Hour,
+		CookieSecure:           "false",
+		WebAuthnRPID:           "localhost",
+		WebAuthnRPOrigin:       "http://localhost",
+		RegistrationMode:       "invite_only",
+		TesseractBin:           tesseractBin,
+		TesseractThread:        1,
 	}
 
 	scanner := ocr.NewScanner(tesseractBin, cfg.OCRLanguages, cfg.OCRTimeout, 1)
@@ -263,7 +268,7 @@ func TestOCRFailureManualCompletionAndBackupRestore(t *testing.T) {
 	if err := store.Backup(context.Background(), backupPath); err != nil {
 		t.Fatalf("backup failed: %v", err)
 	}
-	restored, err := db.Open(backupPath)
+	restored, err := db.OpenWithKeys(backupPath, store.Keys)
 	if err != nil {
 		t.Fatalf("open restored backup: %v", err)
 	}
@@ -459,7 +464,7 @@ func TestMultiUserCreationAttributionAndFilter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	exps, err := store.ListExpenses(context.Background(), db.ExpenseFilter{UserID: maria.ID})
+	exps, err := store.ListExpenses(context.Background(), db.ExpenseFilter{HouseholdID: 1, UserID: maria.ID})
 	if err != nil || len(exps) != 1 {
 		t.Fatalf("expected 1 expense for Maria, got %d (err=%v)", len(exps), err)
 	}

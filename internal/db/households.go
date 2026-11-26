@@ -51,7 +51,13 @@ var defaultCategories = []struct {
 	{"Uncategorized", 100},
 }
 
-// CreateHousehold creates a new household, seeds default categories, and adds creatorUserID as admin.
+type HouseholdInvite struct {
+	Code      string
+	Role      string
+	ExpiresAt string
+}
+
+// CreateHousehold creates a new household, wraps a fresh DEK, seeds default categories, and adds creatorUserID as owner.
 func (s *Store) CreateHousehold(ctx context.Context, name string, creatorUserID int64) (int64, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -70,8 +76,12 @@ func (s *Store) CreateHousehold(ctx context.Context, name string, creatorUserID 
 	}
 	hhID, _ := res.LastInsertId()
 
+	if _, err := s.ensureDEKTx(ctx, tx, hhID); err != nil {
+		return 0, err
+	}
+
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO household_members (household_id, user_id, role, created_at) VALUES (?, ?, 'admin', ?)
+		INSERT INTO household_members (household_id, user_id, role, created_at) VALUES (?, ?, 'owner', ?)
 	`, hhID, creatorUserID, now); err != nil {
 		return 0, err
 	}
@@ -120,7 +130,7 @@ func (s *Store) ListHouseholdMembers(ctx context.Context, householdID int64) ([]
 		FROM household_members m
 		JOIN users u ON u.id = m.user_id
 		WHERE m.household_id = ?
-		ORDER BY CASE WHEN m.role = 'admin' THEN 0 ELSE 1 END, u.id ASC
+		ORDER BY CASE WHEN m.role = 'owner' THEN 0 ELSE 1 END, u.id ASC
 	`, householdID)
 	if err != nil {
 		return nil, err
@@ -138,10 +148,15 @@ func (s *Store) ListHouseholdMembers(ctx context.Context, householdID int64) ([]
 	return out, rows.Err()
 }
 
-func (s *Store) AddHouseholdMember(ctx context.Context, householdID, userID int64, role string) error {
-	if role != "admin" {
-		role = "member"
+func normalizeRole(role string) string {
+	if role == "owner" || role == "admin" {
+		return "owner"
 	}
+	return "member"
+}
+
+func (s *Store) AddHouseholdMember(ctx context.Context, householdID, userID int64, role string) error {
+	role = normalizeRole(role)
 	_, err := s.DB.ExecContext(ctx, `
 		INSERT INTO household_members (household_id, user_id, role, created_at)
 		VALUES (?, ?, ?, ?)
@@ -159,9 +174,7 @@ func (s *Store) CreateAndAddHouseholdMember(ctx context.Context, householdID int
 	if displayName == "" {
 		displayName = username
 	}
-	if role != "admin" {
-		role = "member"
-	}
+	role = normalizeRole(role)
 
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -193,12 +206,51 @@ func (s *Store) CreateAndAddHouseholdMember(ctx context.Context, householdID int
 }
 
 func (s *Store) CreateInvite(ctx context.Context, householdID, createdByUserID int64, code string, expiresAt time.Time) error {
+	return s.CreateInviteWithRole(ctx, householdID, createdByUserID, code, "member", expiresAt)
+}
+
+func (s *Store) CreateInviteWithRole(ctx context.Context, householdID, createdByUserID int64, code, role string, expiresAt time.Time) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.DB.ExecContext(ctx, `
-		INSERT INTO household_invites (code, household_id, created_by_user_id, expires_at, created_at)
-		VALUES (?, ?, ?, ?, ?)
-	`, code, householdID, createdByUserID, expiresAt.UTC().Format(time.RFC3339), now)
+		INSERT INTO household_invites (code, household_id, role, created_by_user_id, expires_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, code, householdID, normalizeRole(role), createdByUserID, expiresAt.UTC().Format(time.RFC3339), now)
 	return err
+}
+
+func (s *Store) ListActiveInvites(ctx context.Context, householdID int64, now time.Time) ([]HouseholdInvite, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT code, role, expires_at FROM household_invites
+		WHERE household_id = ? AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ?
+		ORDER BY created_at DESC
+	`, householdID, now.UTC().Format(time.RFC3339))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []HouseholdInvite
+	for rows.Next() {
+		var inv HouseholdInvite
+		if err := rows.Scan(&inv.Code, &inv.Role, &inv.ExpiresAt); err != nil {
+			return nil, err
+		}
+		out = append(out, inv)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) RevokeInvite(ctx context.Context, householdID int64, code string) error {
+	res, err := s.DB.ExecContext(ctx, `
+		UPDATE household_invites SET revoked_at = ? WHERE household_id = ? AND code = ? AND used_at IS NULL AND revoked_at IS NULL
+	`, time.Now().UTC().Format(time.RFC3339), householdID, strings.TrimSpace(code))
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *Store) AcceptInvite(ctx context.Context, code string, userID int64, now time.Time) (int64, error) {
@@ -213,18 +265,18 @@ func (s *Store) AcceptInvite(ctx context.Context, code string, userID int64, now
 	defer tx.Rollback()
 
 	var hhID int64
-	var expStr string
-	var usedAt sql.NullString
+	var role, expStr string
+	var usedAt, revokedAt sql.NullString
 	err = tx.QueryRowContext(ctx, `
-		SELECT household_id, expires_at, used_at FROM household_invites WHERE code = ?
-	`, code).Scan(&hhID, &expStr, &usedAt)
+		SELECT household_id, role, expires_at, used_at, revoked_at FROM household_invites WHERE code = ?
+	`, code).Scan(&hhID, &role, &expStr, &usedAt, &revokedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, ErrInvalidInvite
 	}
 	if err != nil {
 		return 0, err
 	}
-	if usedAt.Valid {
+	if usedAt.Valid || revokedAt.Valid {
 		return 0, ErrInvalidInvite
 	}
 	exp, err := time.Parse(time.RFC3339, expStr)
@@ -238,9 +290,9 @@ func (s *Store) AcceptInvite(ctx context.Context, code string, userID int64, now
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO household_members (household_id, user_id, role, created_at)
-		VALUES (?, ?, 'member', ?)
+		VALUES (?, ?, ?, ?)
 		ON CONFLICT(household_id, user_id) DO NOTHING
-	`, hhID, userID, nowStr); err != nil {
+	`, hhID, userID, normalizeRole(role), nowStr); err != nil {
 		return 0, err
 	}
 
@@ -248,6 +300,72 @@ func (s *Store) AcceptInvite(ctx context.Context, code string, userID int64, now
 		return 0, err
 	}
 	return hhID, nil
+}
+
+func (s *Store) RemoveHouseholdMember(ctx context.Context, householdID, targetUserID int64) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var role string
+	err = tx.QueryRowContext(ctx, `SELECT role FROM household_members WHERE household_id = ? AND user_id = ?`, householdID, targetUserID).Scan(&role)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if role == "owner" {
+		var owners int
+		_ = tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM household_members WHERE household_id = ? AND role = 'owner'`, householdID).Scan(&owners)
+		if owners <= 1 {
+			return ErrLastOwner
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM household_members WHERE household_id = ? AND user_id = ?`, householdID, targetUserID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET active_household_id = NULL WHERE user_id = ? AND active_household_id = ?`, targetUserID, householdID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) TransferOwnership(ctx context.Context, householdID, newOwnerID, currentOwnerID int64) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM household_members WHERE household_id = ? AND user_id = ?`, householdID, newOwnerID).Scan(&exists); err != nil || exists == 0 {
+		return ErrNotMember
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE household_members SET role = 'owner' WHERE household_id = ? AND user_id = ?`, householdID, newOwnerID); err != nil {
+		return err
+	}
+	if currentOwnerID > 0 && currentOwnerID != newOwnerID {
+		if _, err := tx.ExecContext(ctx, `UPDATE household_members SET role = 'member' WHERE household_id = ? AND user_id = ?`, householdID, currentOwnerID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) DeleteHousehold(ctx context.Context, householdID int64) error {
+	res, err := s.DB.ExecContext(ctx, `DELETE FROM households WHERE id = ?`, householdID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *Store) SetSessionHousehold(ctx context.Context, tokenHash string, userID, householdID int64) error {

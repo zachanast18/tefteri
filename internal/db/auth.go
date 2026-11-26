@@ -14,9 +14,15 @@ type User struct {
 	DisplayName         string
 	PasswordHash        string
 	CreatedAt           string
+	IsInstanceAdmin     bool
+	TOTPEnabled         bool
+	TOTPSeedEnc         []byte
+	TOTPKekVersion      int
 	ActiveHouseholdID   int64
 	ActiveHouseholdName string
 	ActiveRole          string
+	MFAVerified         bool
+	LastAuthAt          time.Time
 }
 
 func (u User) Label() string {
@@ -115,49 +121,105 @@ func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
 
 func (s *Store) GetUserByUsername(ctx context.Context, username string) (User, error) {
 	var u User
+	var adminInt, totpInt int
 	err := s.DB.QueryRowContext(ctx, `
-		SELECT id, username, display_name, password_hash, created_at FROM users WHERE username = ?
-	`, strings.TrimSpace(username)).Scan(&u.ID, &u.Username, &u.DisplayName, &u.PasswordHash, &u.CreatedAt)
+		SELECT id, username, display_name, password_hash, created_at, is_instance_admin, totp_enabled, totp_seed_enc, totp_kek_version
+		FROM users WHERE username = ?
+	`, strings.TrimSpace(username)).Scan(&u.ID, &u.Username, &u.DisplayName, &u.PasswordHash, &u.CreatedAt, &adminInt, &totpInt, &u.TOTPSeedEnc, &u.TOTPKekVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return u, ErrNotFound
 	}
+	u.IsInstanceAdmin = adminInt == 1
+	u.TOTPEnabled = totpInt == 1
 	return u, err
 }
 
+func (s *Store) GetUserByID(ctx context.Context, id int64) (User, error) {
+	var u User
+	var adminInt, totpInt int
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT id, username, display_name, password_hash, created_at, is_instance_admin, totp_enabled, totp_seed_enc, totp_kek_version
+		FROM users WHERE id = ?
+	`, id).Scan(&u.ID, &u.Username, &u.DisplayName, &u.PasswordHash, &u.CreatedAt, &adminInt, &totpInt, &u.TOTPSeedEnc, &u.TOTPKekVersion)
+	if errors.Is(err, sql.ErrNoRows) {
+		return u, ErrNotFound
+	}
+	u.IsInstanceAdmin = adminInt == 1
+	u.TOTPEnabled = totpInt == 1
+	return u, err
+}
+
+func (s *Store) UpdateUserPassword(ctx context.Context, userID int64, passwordHash string) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE users SET password_hash = ? WHERE id = ?`, passwordHash, userID)
+	return err
+}
+
 func (s *Store) CreateSession(ctx context.Context, tokenHash string, userID int64, expiresAt time.Time) error {
-	now := time.Now().UTC().Format(time.RFC3339)
+	return s.CreateSessionFull(ctx, tokenHash, userID, true, expiresAt, time.Now())
+}
+
+func (s *Store) CreateSessionFull(ctx context.Context, tokenHash string, userID int64, mfaVerified bool, expiresAt time.Time, now time.Time) error {
+	nowStr := now.UTC().Format(time.RFC3339)
 	var hhID sql.NullInt64
 	if hhs, err := s.ListUserHouseholds(ctx, userID); err == nil && len(hhs) > 0 {
 		hhID = sql.NullInt64{Int64: hhs[0].ID, Valid: true}
 	}
 	_, err := s.DB.ExecContext(ctx, `
-		INSERT INTO sessions (token_hash, user_id, active_household_id, expires_at, created_at)
-		VALUES (?, ?, ?, ?, ?)
-	`, tokenHash, userID, hhID, expiresAt.UTC().Format(time.RFC3339), now)
+		INSERT INTO sessions (token_hash, user_id, active_household_id, expires_at, created_at, last_seen_at, mfa_verified, last_auth_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, tokenHash, userID, hhID, expiresAt.UTC().Format(time.RFC3339), nowStr, nowStr, boolToInt(mfaVerified), nowStr)
 	return err
 }
 
 func (s *Store) GetSessionUser(ctx context.Context, tokenHash string, now time.Time) (User, error) {
+	return s.GetSessionUserWithIdle(ctx, tokenHash, now, 7*24*time.Hour)
+}
+
+func (s *Store) GetSessionUserWithIdle(ctx context.Context, tokenHash string, now time.Time, idleTTL time.Duration) (User, error) {
 	var u User
-	var expStr string
+	var expStr, lastSeenStr, lastAuthStr string
 	var activeHH sql.NullInt64
+	var adminInt, totpInt, mfaInt int
 	err := s.DB.QueryRowContext(ctx, `
-		SELECT u.id, u.username, u.display_name, u.password_hash, u.created_at, s.active_household_id, s.expires_at
+		SELECT u.id, u.username, u.display_name, u.password_hash, u.created_at,
+		       u.is_instance_admin, u.totp_enabled, u.totp_seed_enc, u.totp_kek_version,
+		       s.active_household_id, s.expires_at, s.last_seen_at, s.mfa_verified, s.last_auth_at
 		FROM sessions s
 		JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = ?
-	`, tokenHash).Scan(&u.ID, &u.Username, &u.DisplayName, &u.PasswordHash, &u.CreatedAt, &activeHH, &expStr)
+	`, tokenHash).Scan(
+		&u.ID, &u.Username, &u.DisplayName, &u.PasswordHash, &u.CreatedAt,
+		&adminInt, &totpInt, &u.TOTPSeedEnc, &u.TOTPKekVersion,
+		&activeHH, &expStr, &lastSeenStr, &mfaInt, &lastAuthStr,
+	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return u, ErrNotFound
 	}
 	if err != nil {
 		return u, err
 	}
+	u.IsInstanceAdmin = adminInt == 1
+	u.TOTPEnabled = totpInt == 1
+	u.MFAVerified = mfaInt == 1
+
 	exp, err := time.Parse(time.RFC3339, expStr)
 	if err != nil || now.UTC().After(exp) {
 		_, _ = s.DB.ExecContext(ctx, `DELETE FROM sessions WHERE token_hash = ?`, tokenHash)
 		return User{}, ErrNotFound
 	}
+	if lastSeenStr != "" && idleTTL > 0 {
+		if ls, err := time.Parse(time.RFC3339, lastSeenStr); err == nil && now.UTC().After(ls.Add(idleTTL)) {
+			_, _ = s.DB.ExecContext(ctx, `DELETE FROM sessions WHERE token_hash = ?`, tokenHash)
+			return User{}, ErrNotFound
+		}
+	}
+	if lastAuthStr != "" {
+		if la, err := time.Parse(time.RFC3339, lastAuthStr); err == nil {
+			u.LastAuthAt = la
+		}
+	}
+
+	_, _ = s.DB.ExecContext(ctx, `UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?`, now.UTC().Format(time.RFC3339), tokenHash)
 
 	hhs, err := s.ListUserHouseholds(ctx, u.ID)
 	if err == nil && len(hhs) > 0 {
@@ -175,6 +237,32 @@ func (s *Store) GetSessionUser(ctx context.Context, tokenHash string, now time.T
 		u.ActiveRole = chosen.Role
 	}
 	return u, nil
+}
+
+func (s *Store) RotateSession(ctx context.Context, oldTokenHash, newTokenHash string, userID int64, mfaVerified bool, expiresAt, now time.Time) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var activeHH sql.NullInt64
+	_ = tx.QueryRowContext(ctx, `SELECT active_household_id FROM sessions WHERE token_hash = ?`, oldTokenHash).Scan(&activeHH)
+	_, _ = tx.ExecContext(ctx, `DELETE FROM sessions WHERE token_hash = ?`, oldTokenHash)
+
+	nowStr := now.UTC().Format(time.RFC3339)
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO sessions (token_hash, user_id, active_household_id, expires_at, created_at, last_seen_at, mfa_verified, last_auth_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, newTokenHash, userID, activeHH, expiresAt.UTC().Format(time.RFC3339), nowStr, nowStr, boolToInt(mfaVerified), nowStr); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) DeleteAllUserSessions(ctx context.Context, userID int64) error {
+	_, err := s.DB.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, userID)
+	return err
 }
 
 func (s *Store) DeleteSession(ctx context.Context, tokenHash string) error {

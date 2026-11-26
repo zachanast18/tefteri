@@ -36,6 +36,12 @@
       <input id="password" name="password" type="password" autocomplete="current-password" required>
     </div>
     <button type="submit" class="btn btn-primary">Sign in</button>
+    <button id="passkey-login-btn" type="button" class="btn btn-secondary" data-csrf="{{.CSRFToken}}">Sign in with passkey</button>
+    <div id="passkey-login-status" class="muted" role="status" aria-live="polite"></div>
   </form>
+
+  <p style="margin-top: 1rem;">
+    <a href="/recovery">Lost your device? Use a recovery code</a>
+  </p>
 </div>
 {{end}}

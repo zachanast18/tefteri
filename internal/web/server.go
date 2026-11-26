@@ -7,9 +7,12 @@ import (
 	"html/template"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/go-webauthn/webauthn/webauthn"
 
 	"spending-project/internal/auth"
 	"spending-project/internal/config"
@@ -25,6 +28,8 @@ type Server struct {
 	cfg       config.Config
 	store     *db.Store
 	scanner   *ocr.Scanner
+	limiter   *auth.RateLimiter
+	webauthn  *webauthn.WebAuthn
 	templates map[string]*template.Template
 	mux       *http.ServeMux
 	nowFn     func() time.Time
@@ -53,9 +58,15 @@ func NewServer(cfg config.Config, store *db.Store, scanner *ocr.Scanner) (*Serve
 		cfg:       cfg,
 		store:     store,
 		scanner:   scanner,
+		limiter:   auth.NewRateLimiter(),
 		templates: make(map[string]*template.Template),
 		mux:       http.NewServeMux(),
 		nowFn:     time.Now,
+	}
+	if wa, err := s.initWebAuthn(); err == nil {
+		s.webauthn = wa
+	} else {
+		log.Printf("webauthn disabled: %v", err)
 	}
 
 	funcs := template.FuncMap{
@@ -95,6 +106,9 @@ func NewServer(cfg config.Config, store *db.Store, scanner *ocr.Scanner) (*Serve
 
 	pages := []string{
 		"login.html",
+		"mfa.html",
+		"recovery.html",
+		"security.html",
 		"overview.html",
 		"scan.html",
 		"expense_form.html",
@@ -127,7 +141,23 @@ func (s *Server) routes() {
 
 	s.mux.HandleFunc("GET /login", s.handleLoginGet)
 	s.mux.HandleFunc("POST /login", s.handleLoginPost)
-	s.mux.HandleFunc("POST /logout", s.requireAuth(s.handleLogout))
+	s.mux.HandleFunc("GET /recovery", s.handleRecoveryGet)
+	s.mux.HandleFunc("POST /recovery", s.handleRecoveryPost)
+	s.mux.HandleFunc("POST /webauthn/login/begin", s.handleWebAuthnLoginBegin)
+	s.mux.HandleFunc("POST /webauthn/login/finish", s.handleWebAuthnLoginFinish)
+
+	s.mux.HandleFunc("GET /mfa", s.requireSessionOnly(s.handleMFAGet))
+	s.mux.HandleFunc("POST /mfa", s.requireSessionOnly(s.handleMFAPost))
+	s.mux.HandleFunc("POST /logout", s.requireSessionOnly(s.handleLogout))
+
+	s.mux.HandleFunc("GET /security", s.requireAuthNoHousehold(s.handleSecurityGet))
+	s.mux.HandleFunc("POST /security/totp/enable", s.requireAuthNoHousehold(s.handleTOTPEnable))
+	s.mux.HandleFunc("POST /security/totp/disable", s.requireAuthNoHousehold(s.handleTOTPDisable))
+	s.mux.HandleFunc("POST /security/recovery/regenerate", s.requireAuthNoHousehold(s.handleRecoveryRegenerate))
+	s.mux.HandleFunc("POST /security/sessions/revoke-all", s.requireAuthNoHousehold(s.handleSessionsRevokeAll))
+	s.mux.HandleFunc("POST /security/passkeys/delete", s.requireAuthNoHousehold(s.handlePasskeyDelete))
+	s.mux.HandleFunc("POST /webauthn/register/begin", s.requireAuthNoHousehold(s.handleWebAuthnRegisterBegin))
+	s.mux.HandleFunc("POST /webauthn/register/finish", s.requireAuthNoHousehold(s.handleWebAuthnRegisterFinish))
 
 	s.mux.HandleFunc("GET /{$}", s.requireAuth(s.handleOverview))
 	s.mux.HandleFunc("GET /scan", s.requireAuth(s.handleScanGet))
@@ -158,12 +188,16 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /budgets", s.requireAuth(s.handleBudgetSave))
 	s.mux.HandleFunc("POST /settlements", s.requireAuth(s.handleSettlementCreate))
 
-	s.mux.HandleFunc("GET /users", s.requireAuth(s.handleUsersGet))
+	s.mux.HandleFunc("GET /users", s.requireAuthNoHousehold(s.handleUsersGet))
 	s.mux.HandleFunc("POST /users", s.requireAuth(s.handleUsersPost))
-	s.mux.HandleFunc("POST /households", s.requireAuth(s.handleHouseholdCreate))
-	s.mux.HandleFunc("POST /households/switch", s.requireAuth(s.handleHouseholdSwitch))
+	s.mux.HandleFunc("POST /households", s.requireAuthNoHousehold(s.handleHouseholdCreate))
+	s.mux.HandleFunc("POST /households/switch", s.requireAuthNoHousehold(s.handleHouseholdSwitch))
 	s.mux.HandleFunc("POST /households/invite", s.requireAuth(s.handleHouseholdInvite))
-	s.mux.HandleFunc("POST /households/join", s.requireAuth(s.handleHouseholdJoin))
+	s.mux.HandleFunc("POST /households/invites/revoke", s.requireAuth(s.handleHouseholdInviteRevoke))
+	s.mux.HandleFunc("POST /households/join", s.requireAuthNoHousehold(s.handleHouseholdJoin))
+	s.mux.HandleFunc("POST /households/members/remove", s.requireAuth(s.handleHouseholdMemberRemove))
+	s.mux.HandleFunc("POST /households/ownership/transfer", s.requireAuth(s.handleHouseholdOwnershipTransfer))
+	s.mux.HandleFunc("POST /households/delete", s.requireAuth(s.handleHouseholdDelete))
 }
 
 func (s *Server) securityHeaders(next http.Handler) http.Handler {
@@ -171,8 +205,23 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
 		w.Header().Set("Referrer-Policy", "same-origin")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'")
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	if s.cfg.TrustedProxy != "" && host == s.cfg.TrustedProxy {
+		if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
+			parts := strings.Split(xff, ",")
+			return strings.TrimSpace(parts[0])
+		}
+	}
+	return host
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -185,22 +234,46 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ok\n"))
 }
 
-func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
+func (s *Server) requireSessionOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		c, err := r.Cookie(auth.SessionCookieName)
 		if err != nil || strings.TrimSpace(c.Value) == "" {
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
 			return
 		}
-		user, err := s.store.GetSessionUser(r.Context(), auth.HashToken(c.Value), s.nowFn())
+		user, err := s.store.GetSessionUserWithIdle(r.Context(), auth.HashToken(c.Value), s.nowFn(), s.cfg.SessionIdleTTL)
 		if err != nil {
 			auth.ClearSessionCookie(w, r, s.cfg.CookieSecure)
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
 			return
 		}
+		w.Header().Set("Cache-Control", "private, no-store")
 		ctx := context.WithValue(r.Context(), userContextKey, user)
 		next(w, r.WithContext(ctx))
 	}
+}
+
+func (s *Server) requireAuthNoHousehold(next http.HandlerFunc) http.HandlerFunc {
+	return s.requireSessionOnly(func(w http.ResponseWriter, r *http.Request) {
+		u, _ := s.currentUser(r)
+		if !u.MFAVerified {
+			http.Redirect(w, r, "/mfa", http.StatusSeeOther)
+			return
+		}
+		next(w, r)
+	})
+}
+
+func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
+	return s.requireAuthNoHousehold(func(w http.ResponseWriter, r *http.Request) {
+		u, _ := s.currentUser(r)
+		if u.ActiveHouseholdID <= 0 {
+			s.setFlash(w, r, "You do not belong to an active household. Join with an invite code or create one.")
+			http.Redirect(w, r, "/users", http.StatusSeeOther)
+			return
+		}
+		next(w, r)
+	})
 }
 
 func (s *Server) currentUser(r *http.Request) (db.User, bool) {

@@ -1,0 +1,25 @@
+{{define "content"}}
+<div class="auth-wrap">
+  <div class="page-head">
+    <h1>Account recovery</h1>
+    <a class="btn btn-secondary btn-sm" href="/login">Back to sign in</a>
+  </div>
+
+  {{if .Error}}
+  <div class="panel panel-danger" role="alert">{{.Error}}</div>
+  {{end}}
+
+  <form class="panel form-stack" method="POST" action="/recovery">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <div class="field">
+      <label for="rec-user">Username</label>
+      <input id="rec-user" name="username" type="text" autocomplete="username" required value="{{.Username}}">
+    </div>
+    <div class="field">
+      <label for="rec-code">Single-use recovery code</label>
+      <input id="rec-code" name="recovery_code" type="text" required placeholder="XXXX-XXXX-XXXX" autocomplete="off">
+    </div>
+    <button type="submit" class="btn btn-primary">Sign in with recovery code</button>
+  </form>
+</div>
+{{end}}

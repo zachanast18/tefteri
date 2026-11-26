@@ -1,0 +1,108 @@
+{{define "content"}}
+<div class="page-head">
+  <h1>Security</h1>
+  <span class="muted">Account: <strong>{{.User.Username}}</strong></span>
+</div>
+
+{{if .NewRecoveryCodes}}
+<div class="panel panel-warn" role="alert">
+  <p style="margin: 0 0 0.5rem;"><strong>Save these single-use recovery codes now.</strong> They will not be shown again.</p>
+  <ul style="font-family: monospace; margin: 0; padding-left: 1.25rem;">
+    {{range .NewRecoveryCodes}}
+    <li>{{.}}</li>
+    {{end}}
+  </ul>
+</div>
+{{end}}
+
+{{if not .RecentAuthOK}}
+<div class="panel panel-warn" role="status">
+  Your session is older than 15 minutes. Sign in again before adding or removing passkeys, TOTP, or recovery codes.
+</div>
+{{end}}
+
+<div class="overview-grid">
+  <div class="form-stack">
+    <section class="panel" aria-labelledby="passkeys-heading">
+      <h2 id="passkeys-heading">Passkeys &amp; security keys</h2>
+      <p class="field-hint">User-verified passkeys provide passwordless multifactor sign-in.</p>
+
+      {{if .Passkeys}}
+      <ul class="sub-list" style="margin-bottom: 1rem;">
+        {{range .Passkeys}}
+        <li class="sub-item" style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;">
+          <div>
+            <strong>{{.Label}}</strong>
+            <div class="field-hint">Added {{.CreatedAt}}</div>
+          </div>
+          <form method="POST" action="/security/passkeys/delete">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <input type="hidden" name="cred_id" value="{{.IDB64}}">
+            <button type="submit" class="btn btn-danger btn-sm">Remove</button>
+          </form>
+        </li>
+        {{end}}
+      </ul>
+      {{else}}
+      <p class="muted">No passkeys registered yet.</p>
+      {{end}}
+
+      <div class="form-stack">
+        <div class="field">
+          <label for="passkey-label">New passkey label</label>
+          <input id="passkey-label" type="text" placeholder="e.g. Phone Face ID or YubiKey" value="My Passkey">
+        </div>
+        <div>
+          <button id="register-passkey-btn" type="button" class="btn btn-primary" data-csrf="{{.CSRFToken}}">Register passkey</button>
+        </div>
+        <div id="passkey-status" class="muted" role="status" aria-live="polite"></div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="totp-heading">
+      <h2 id="totp-heading">Authenticator app (TOTP)</h2>
+      {{if .User.TOTPEnabled}}
+      <p><span class="badge badge-active">Enabled</span> Required when signing in with a password.</p>
+      <form method="POST" action="/security/totp/disable">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <button type="submit" class="btn btn-danger btn-sm">Disable TOTP</button>
+      </form>
+      {{else}}
+      <p class="field-hint">Add this secret to your authenticator app, then enter the 6-digit code to enable.</p>
+      <p><strong>Secret:</strong> <code>{{.NewTOTPSeed}}</code></p>
+      <form class="form-stack" method="POST" action="/security/totp/enable">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <input type="hidden" name="seed" value="{{.NewTOTPSeed}}">
+        <div class="field">
+          <label for="totp-enable-code">6-digit code</label>
+          <input id="totp-enable-code" name="code" type="text" inputmode="numeric" pattern="[0-9]{6}" required placeholder="123456">
+        </div>
+        <div>
+          <button type="submit" class="btn btn-secondary">Enable TOTP</button>
+        </div>
+      </form>
+      {{end}}
+    </section>
+  </div>
+
+  <aside class="form-stack">
+    <section class="panel" aria-labelledby="rec-heading">
+      <h2 id="rec-heading">Recovery codes</h2>
+      <p class="field-hint">Unused codes remaining: <strong class="num">{{.UnusedRecovery}}</strong></p>
+      <form method="POST" action="/security/recovery/regenerate">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <button type="submit" class="btn btn-secondary">Generate new recovery codes</button>
+      </form>
+    </section>
+
+    <section class="panel" aria-labelledby="sess-heading">
+      <h2 id="sess-heading">Active sessions</h2>
+      <p class="field-hint">Sign out all browsers and phones immediately.</p>
+      <form method="POST" action="/security/sessions/revoke-all">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <button type="submit" class="btn btn-danger">Sign out all devices</button>
+      </form>
+    </section>
+  </aside>
+</div>
+{{end}}

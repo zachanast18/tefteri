@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"spending-project/internal/auth"
 	"spending-project/internal/db"
@@ -108,6 +109,24 @@ func (s *Server) handleScanPost(w http.ResponseWriter, r *http.Request) {
 
 	u, _ := s.currentUser(r)
 	hhID := u.ActiveHouseholdID
+	if !s.limiter.Allow(fmt.Sprintf("upload:%d", hhID), 20, 10*time.Minute, s.nowFn()) {
+		s.render(w, r, "scan.html", http.StatusTooManyRequests, scanPageData{
+			BasePage:     s.newBasePage(w, r, "Scan receipt", "overview", true),
+			MaxUploadMB:  s.cfg.MaxUploadBytes / (1024 * 1024),
+			OCRLanguages: s.cfg.OCRLanguages,
+			Error:        "Too many uploads in a short time. Wait a few minutes or enter manually.",
+		})
+		return
+	}
+	if usedBytes, err := s.store.GetHouseholdReceiptBytes(r.Context(), hhID); err == nil && usedBytes+int64(len(proc.Data)) > s.cfg.MaxHouseholdQuotaBytes {
+		s.render(w, r, "scan.html", http.StatusRequestEntityTooLarge, scanPageData{
+			BasePage:     s.newBasePage(w, r, "Scan receipt", "overview", true),
+			MaxUploadMB:  s.cfg.MaxUploadBytes / (1024 * 1024),
+			OCRLanguages: s.cfg.OCRLanguages,
+			Error:        "Household receipt storage quota reached. Enter expense manually or delete old receipts.",
+		})
+		return
+	}
 
 	imgID, err := s.store.SaveReceiptImage(r.Context(), hhID, proc.SHA256, proc.MimeType, proc.Width, proc.Height, proc.Data)
 	if err != nil {
@@ -725,7 +744,7 @@ func (s *Server) handleReceiptImage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", img.MimeType)
-	w.Header().Set("Cache-Control", "private, max-age=3600")
+	w.Header().Set("Cache-Control", "private, no-store")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(img.Data)
 }
@@ -807,6 +826,10 @@ func (s *Server) handleLedger(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleLedgerCSV(w http.ResponseWriter, r *http.Request) {
 	u, _ := s.currentUser(r)
+	if !s.limiter.Allow(fmt.Sprintf("export:%d", u.ID), 10, 5*time.Minute, s.nowFn()) {
+		http.Error(w, "too many exports; wait a few minutes", http.StatusTooManyRequests)
+		return
+	}
 	filter := parseExpenseFilter(r)
 	filter.HouseholdID = u.ActiveHouseholdID
 	expenses, err := s.store.ListExpenses(r.Context(), filter)
@@ -814,8 +837,10 @@ func (s *Server) handleLedgerCSV(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to export ledger", http.StatusInternalServerError)
 		return
 	}
+	_ = s.store.LogAudit(r.Context(), "csv_exported", &u.ID, &u.ActiveHouseholdID, fmt.Sprintf("rows=%d", len(expenses)))
 
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Cache-Control", "private, no-store")
 	w.Header().Set("Content-Disposition", `attachment; filename="tefteri-ledger.csv"`)
 	// UTF-8 BOM for spreadsheet compatibility with Greek characters.
 	_, _ = w.Write([]byte("\xEF\xBB\xBF"))
@@ -829,18 +854,30 @@ func (s *Server) handleLedgerCSV(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = cw.Write([]string{
 			e.PurchaseDate,
-			e.Merchant,
+			sanitizeCSVCell(e.Merchant),
 			money.FormatCSV(cents),
 			s.cfg.Currency,
-			e.CategoryName,
+			sanitizeCSVCell(e.CategoryName),
 			e.PaymentMethod,
 			e.Source,
-			e.PaidByName,
-			e.CreatedByName,
-			e.Note,
+			sanitizeCSVCell(e.PaidByName),
+			sanitizeCSVCell(e.CreatedByName),
+			sanitizeCSVCell(e.Note),
 		})
 	}
 	cw.Flush()
+}
+
+func sanitizeCSVCell(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + s
+	default:
+		return s
+	}
 }
 
 func (s *Server) handleCreateCategory(w http.ResponseWriter, r *http.Request) {

@@ -17,6 +17,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"spending-project/internal/categorize"
+	"spending-project/internal/crypto"
 )
 
 //go:embed migrations/*.sql
@@ -29,11 +30,28 @@ var (
 )
 
 type Store struct {
-	DB *sql.DB
+	DB   *sql.DB
+	Keys *crypto.KeyRing
 }
 
-// Open opens the SQLite database, configures WAL and foreign keys, and runs migrations.
+// Open opens the SQLite database with an ephemeral in-memory key ring (for tests/dev).
 func Open(path string) (*Store, error) {
+	k, err := crypto.GenerateKey()
+	if err != nil {
+		return nil, err
+	}
+	return OpenWithKeys(path, &crypto.KeyRing{
+		CurrentVersion: 1,
+		Keys:           map[int][]byte{1: k},
+	})
+}
+
+// OpenWithKeys opens the SQLite database, configures WAL and foreign keys, runs migrations,
+// and ensures existing plaintext records are encrypted under the KeyRing.
+func OpenWithKeys(path string, kr *crypto.KeyRing) (*Store, error) {
+	if kr == nil {
+		return nil, crypto.ErrMissingMasterKey
+	}
 	if path != ":memory:" {
 		dir := filepath.Dir(path)
 		if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -61,10 +79,14 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("ping sqlite: %w", err)
 	}
 
-	s := &Store{DB: sqlDB}
+	s := &Store{DB: sqlDB, Keys: kr}
 	if err := s.migrate(); err != nil {
 		sqlDB.Close()
 		return nil, fmt.Errorf("migrate sqlite: %w", err)
+	}
+	if err := s.MigratePlaintextToEncrypted(context.Background()); err != nil {
+		sqlDB.Close()
+		return nil, fmt.Errorf("encrypt existing records: %w", err)
 	}
 	return s, nil
 }
@@ -208,11 +230,16 @@ func (s *Store) RememberMerchantCategory(ctx context.Context, householdID int64,
 	if norm == "" {
 		return nil
 	}
-	_, err := s.DB.ExecContext(ctx, `
+	dek, err := s.EnsureHouseholdDEK(ctx, householdID)
+	if err != nil {
+		return err
+	}
+	hm := crypto.BlindIndex(dek, "merchant", norm)
+	_, err = s.DB.ExecContext(ctx, `
 		INSERT INTO merchant_category_rules (household_id, normalized_merchant, category_id, updated_at)
 		VALUES (?, ?, ?, ?)
 		ON CONFLICT(household_id, normalized_merchant) DO UPDATE SET category_id = excluded.category_id, updated_at = excluded.updated_at
-	`, householdID, norm, categoryID, time.Now().UTC().Format(time.RFC3339))
+	`, householdID, hm, categoryID, time.Now().UTC().Format(time.RFC3339))
 	return err
 }
 
@@ -221,18 +248,21 @@ func (s *Store) RememberMerchantCategory(ctx context.Context, householdID int64,
 func (s *Store) SuggestCategory(ctx context.Context, householdID int64, merchant string, ocrText string) (Category, string, error) {
 	norm := categorize.NormalizeMerchant(merchant)
 	if norm != "" {
-		var c Category
-		err := s.DB.QueryRowContext(ctx, `
-			SELECT c.id, c.household_id, c.name, c.sort_order
-			FROM merchant_category_rules r
-			JOIN categories c ON c.id = r.category_id
-			WHERE r.household_id = ? AND r.normalized_merchant = ?
-		`, householdID, norm).Scan(&c.ID, &c.HouseholdID, &c.Name, &c.SortOrder)
-		if err == nil {
-			return c, "remembered", nil
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return Category{}, "", err
+		if dek, err := s.EnsureHouseholdDEK(ctx, householdID); err == nil {
+			hm := crypto.BlindIndex(dek, "merchant", norm)
+			var c Category
+			err := s.DB.QueryRowContext(ctx, `
+				SELECT c.id, c.household_id, c.name, c.sort_order
+				FROM merchant_category_rules r
+				JOIN categories c ON c.id = r.category_id
+				WHERE r.household_id = ? AND r.normalized_merchant = ?
+			`, householdID, hm).Scan(&c.ID, &c.HouseholdID, &c.Name, &c.SortOrder)
+			if err == nil {
+				return c, "remembered", nil
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				return Category{}, "", err
+			}
 		}
 	}
 

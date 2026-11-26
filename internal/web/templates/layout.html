@@ -29,7 +29,7 @@
         <form method="POST" action="/households/switch" style="display: inline-flex; align-items: center; gap: 0.25rem;">
           <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
           <label for="hh-switch" class="sr-only">Active household</label>
-          <select id="hh-switch" name="household_id" class="household-select" onchange="this.form.submit()">
+          <select id="hh-switch" name="household_id" class="household-select" data-auto-submit>
             {{range .Households}}
             <option value="{{.ID}}" {{if eq .ID $.ActiveHouseholdID}}selected{{end}}>{{.Name}}</option>
             {{end}}
@@ -48,6 +48,7 @@
         <a class="nav-link" href="/inbox">Needs review ({{.ReviewCount}})</a>
         {{end}}
         <a class="nav-link" href="/users" {{if eq .Nav "users"}}aria-current="page"{{end}}>Household</a>
+        <a class="nav-link" href="/security" {{if eq .Nav "security"}}aria-current="page"{{end}}>Security</a>
         <form class="nav-logout" method="POST" action="/logout">
           <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
           <button type="submit" class="btn-link-muted">Sign out{{if .CurrentUserName}} ({{.CurrentUserName}}){{end}}</button>

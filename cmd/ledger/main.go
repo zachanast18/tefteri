@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -17,6 +19,7 @@ import (
 
 	"spending-project/internal/auth"
 	"spending-project/internal/config"
+	"spending-project/internal/crypto"
 	"spending-project/internal/db"
 	"spending-project/internal/ocr"
 	"spending-project/internal/web"
@@ -43,6 +46,17 @@ func main() {
 			log.Fatalf("usage: ledger backup <dest-file>")
 		}
 		runBackup(cfg, os.Args[2])
+	case "rotate-kek":
+		runRotateKEK(cfg)
+	case "rotate-dek":
+		if len(os.Args) < 3 {
+			log.Fatalf("usage: ledger rotate-dek <household-id>")
+		}
+		hhID, err := strconv.ParseInt(os.Args[2], 10, 64)
+		if err != nil || hhID <= 0 {
+			log.Fatalf("invalid household id")
+		}
+		runRotateDEK(cfg, hhID)
 	case "seed-demo":
 		runSeedDemo(cfg)
 	case "serve":
@@ -50,6 +64,18 @@ func main() {
 	default:
 		log.Fatalf("unknown command: %s", cmd)
 	}
+}
+
+func openConfiguredStore(cfg config.Config) *db.Store {
+	kr, err := crypto.LoadKeyRing(cfg.MasterKeyFile, cfg.MasterKey)
+	if err != nil {
+		log.Fatalf("master key error: %v", err)
+	}
+	store, err := db.OpenWithKeys(cfg.DBPath, kr)
+	if err != nil {
+		log.Fatalf("open db: %v", err)
+	}
+	return store
 }
 
 func runHealthcheck(cfg config.Config) {
@@ -69,10 +95,7 @@ func runHealthcheck(cfg config.Config) {
 }
 
 func runSetupAccount(cfg config.Config) {
-	store, err := db.Open(cfg.DBPath)
-	if err != nil {
-		log.Fatalf("open db: %v", err)
-	}
+	store := openConfiguredStore(cfg)
 	defer store.Close()
 
 	reader := bufio.NewReader(os.Stdin)
@@ -111,6 +134,19 @@ func runSetupAccount(cfg config.Config) {
 		log.Fatalf("save account: %v", err)
 	}
 	fmt.Printf("Household account %q saved.\n", username)
+
+	if u, err := store.GetUserByUsername(context.Background(), username); err == nil {
+		if n, _ := store.CountUnusedRecoveryCodes(context.Background(), u.ID); n == 0 {
+			if plain, hashes, err := auth.GenerateRecoveryCodes(8); err == nil {
+				if err := store.ReplaceRecoveryCodes(context.Background(), u.ID, hashes); err == nil {
+					fmt.Println("Single-use recovery codes (save offline; shown once):")
+					for _, c := range plain {
+						fmt.Println(" ", c)
+					}
+				}
+			}
+		}
+	}
 }
 
 func readPasswordLine(r *bufio.Reader) (string, error) {
@@ -125,10 +161,7 @@ func readPasswordLine(r *bufio.Reader) (string, error) {
 }
 
 func runBackup(cfg config.Config, dest string) {
-	store, err := db.Open(cfg.DBPath)
-	if err != nil {
-		log.Fatalf("open db: %v", err)
-	}
+	store := openConfiguredStore(cfg)
 	defer store.Close()
 
 	if err := store.Backup(context.Background(), dest); err != nil {
@@ -137,11 +170,36 @@ func runBackup(cfg config.Config, dest string) {
 	fmt.Printf("Backup written to %s\n", dest)
 }
 
-func runServe(cfg config.Config) {
-	store, err := db.Open(cfg.DBPath)
-	if err != nil {
-		log.Fatalf("open db: %v", err)
+func runRotateKEK(cfg config.Config) {
+	store := openConfiguredStore(cfg)
+	defer store.Close()
+
+	if err := store.RotateKEK(context.Background()); err != nil {
+		log.Fatalf("rotate-kek failed: %v", err)
 	}
+	fmt.Printf("All household DEKs and TOTP seeds rewrapped under KEK v%d\n", store.Keys.CurrentVersion)
+}
+
+func runRotateDEK(cfg config.Config, householdID int64) {
+	store := openConfiguredStore(cfg)
+	defer store.Close()
+
+	if err := store.RotateHouseholdDEK(context.Background(), householdID); err != nil {
+		log.Fatalf("rotate-dek failed: %v", err)
+	}
+	fmt.Printf("Rotated data encryption key and re-encrypted records for household %d\n", householdID)
+}
+
+func cleanStaleOCRTempFiles() {
+	matches, _ := filepath.Glob(filepath.Join(os.TempDir(), "receipt-*.jpg"))
+	for _, m := range matches {
+		_ = os.Remove(m)
+	}
+}
+
+func runServe(cfg config.Config) {
+	cleanStaleOCRTempFiles()
+	store := openConfiguredStore(cfg)
 	defer store.Close()
 
 	scanner := ocr.NewScanner(cfg.TesseractBin, cfg.OCRLanguages, cfg.OCRTimeout, cfg.TesseractThread)
@@ -176,10 +234,7 @@ func runServe(cfg config.Config) {
 }
 
 func runSeedDemo(cfg config.Config) {
-	store, err := db.Open(cfg.DBPath)
-	if err != nil {
-		log.Fatalf("open db: %v", err)
-	}
+	store := openConfiguredStore(cfg)
 	defer store.Close()
 
 	ctx := context.Background()
