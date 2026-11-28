@@ -20,6 +20,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/makiuchi-d/gozxing"
+	"github.com/makiuchi-d/gozxing/qrcode"
+
 	"spending-project/internal/auth"
 	"spending-project/internal/config"
 	"spending-project/internal/db"
@@ -180,7 +183,22 @@ func TestOCRFailureManualCompletionAndBackupRestore(t *testing.T) {
 	mw := multipart.NewWriter(&body)
 	_ = mw.WriteField("csrf_token", csrf)
 	fw, _ := mw.CreateFormFile("receipt", "receipt.jpg")
-	_, _ = fw.Write(makeTestJPEG(t, 400, 600))
+	const receiptURL = "https://example.gr/receipts/123"
+	qr, err := qrcode.NewQRCodeWriter().Encode(receiptURL, gozxing.BarcodeFormat_QR_CODE, 180, 180, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	photo := image.NewGray(image.Rect(0, 0, qr.GetWidth(), qr.GetHeight()))
+	for y := range qr.GetHeight() {
+		for x := range qr.GetWidth() {
+			if !qr.Get(x, y) {
+				photo.SetGray(x, y, color.Gray{Y: 255})
+			}
+		}
+	}
+	if err := jpeg.Encode(fw, photo, &jpeg.Options{Quality: 90}); err != nil {
+		t.Fatal(err)
+	}
 	mw.Close()
 
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/scan", &body)
@@ -198,6 +216,9 @@ func TestOCRFailureManualCompletionAndBackupRestore(t *testing.T) {
 	}
 	if !strings.Contains(draftBody, "/receipts/") {
 		t.Fatalf("expected attached receipt image in draft review")
+	}
+	if !strings.Contains(draftBody, `href="`+receiptURL+`"`) {
+		t.Fatal("expected QR link in draft review even when OCR fails")
 	}
 
 	// Extract draft_id, receipt_image_id, submission_token.
@@ -256,6 +277,18 @@ func TestOCRFailureManualCompletionAndBackupRestore(t *testing.T) {
 	if err != nil || len(exps) != 1 {
 		t.Fatalf("expected 1 expense after duplicate submission, got %d (err=%v)", len(exps), err)
 	}
+	if err := store.RotateHouseholdDEK(context.Background(), 1); err != nil {
+		t.Fatalf("rotate receipt key: %v", err)
+	}
+	detail, err := client.Get(fmt.Sprintf("%s/expenses/%d", ts.URL, exps[0].ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	detailBody, err := io.ReadAll(detail.Body)
+	detail.Body.Close()
+	if err != nil || detail.StatusCode != http.StatusOK || !bytes.Contains(detailBody, []byte(`href="`+receiptURL+`"`)) {
+		t.Fatalf("expected saved QR link after key rotation, got status %d, err %v", detail.StatusCode, err)
+	}
 
 	// Verify remembered merchant category suggestion works for "Σκλαβενίτης".
 	sugCat, reason, err := store.SuggestCategory(context.Background(), 1, "Σκλαβενίτης", "")
@@ -284,6 +317,9 @@ func TestOCRFailureManualCompletionAndBackupRestore(t *testing.T) {
 	img, err := restored.GetReceiptImage(context.Background(), 1, *restoredExps[0].ReceiptImageID)
 	if err != nil || len(img.Data) == 0 {
 		t.Fatalf("expected receipt image bytes in restored backup, err=%v", err)
+	}
+	if link, err := restored.GetReceiptURL(context.Background(), 1, img.ID); err != nil || link != receiptURL {
+		t.Fatalf("restored QR link = %q, err = %v", link, err)
 	}
 }
 

@@ -11,6 +11,7 @@
   {{if .Expense.ReceiptImageID}}
   <div class="panel">
     <h2 style="margin-bottom: 0.5rem;">Saved receipt</h2>
+    {{if .ReceiptURL}}<p><a href="{{.ReceiptURL}}" target="_blank" rel="noopener noreferrer">Open QR receipt link</a></p>{{end}}
     <img src="/receipts/{{.Expense.ReceiptImageID}}" alt="Saved receipt for {{.Expense.Merchant}}" style="max-width: 100%; height: auto; border-radius: 4px;">
   </div>
   {{end}}

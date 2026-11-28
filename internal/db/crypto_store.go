@@ -471,18 +471,19 @@ func migrateHouseholdPlaintextTx(ctx context.Context, tx *sql.Tx, hhID int64, de
 }
 
 func reencryptReceiptsTx(ctx context.Context, tx *sql.Tx, hhID int64, oldDEK, newDEK []byte) error {
-	rows, err := tx.QueryContext(ctx, `SELECT id, data_enc FROM receipt_images WHERE household_id = ? AND enc_version = 1`, hhID)
+	rows, err := tx.QueryContext(ctx, `SELECT id, data_enc, receipt_url_enc FROM receipt_images WHERE household_id = ? AND enc_version = 1`, hhID)
 	if err != nil {
 		return err
 	}
 	type item struct {
 		id int64
 		ct []byte
+		urlEnc []byte
 	}
 	var list []item
 	for rows.Next() {
 		var x item
-		if err := rows.Scan(&x.id, &x.ct); err != nil {
+		if err := rows.Scan(&x.id, &x.ct, &x.urlEnc); err != nil {
 			rows.Close()
 			return err
 		}
@@ -498,7 +499,18 @@ func reencryptReceiptsTx(ctx context.Context, tx *sql.Tx, hhID int64, oldDEK, ne
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE receipt_images SET data_enc = ? WHERE id = ?`, nct, x.id); err != nil {
+		if len(x.urlEnc) > 0 {
+			aad := crypto.AAD(hhID, "receipt_images", x.id, "receipt_url")
+			clear, err := crypto.Decrypt(oldDEK, aad, x.urlEnc)
+			if err != nil {
+			return err
+		}
+			x.urlEnc, err = crypto.Encrypt(newDEK, aad, clear)
+			if err != nil {
+				return err
+	}
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE receipt_images SET data_enc = ?, receipt_url_enc = ? WHERE id = ?`, nct, x.urlEnc, x.id); err != nil {
 			return err
 		}
 	}

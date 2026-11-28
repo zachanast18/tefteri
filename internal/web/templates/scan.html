@@ -26,7 +26,7 @@
   <div class="field">
     <label for="receipt-file-input">Receipt photo (JPEG or PNG)</label>
     <input id="receipt-file-input" name="receipt" type="file" accept="image/jpeg,image/png,image/*" capture="environment" required>
-    <span class="field-hint">Maximum {{.MaxUploadMB}} MB. Processed locally with Tesseract ({{.OCRLanguages}}).</span>
+    <span class="field-hint">Fill the frame with the receipt and include the entire QR code. Maximum {{.MaxUploadMB}} MB. Scanned locally with Tesseract ({{.OCRLanguages}}).</span>
   </div>
 
   <div id="scan-preview-wrap" hidden>

@@ -116,7 +116,7 @@ type DashboardSummary struct {
 func (s *Store) GetHouseholdReceiptBytes(ctx context.Context, householdID int64) (int64, error) {
 	var total int64
 	err := s.DB.QueryRowContext(ctx, `
-		SELECT COALESCE(SUM(length(data) + COALESCE(length(data_enc), 0)), 0)
+		SELECT COALESCE(SUM(length(data) + COALESCE(length(data_enc), 0) + COALESCE(length(receipt_url_enc), 0)), 0)
 		FROM receipt_images WHERE household_id = ?
 	`, householdID).Scan(&total)
 	return total, err
@@ -129,6 +129,10 @@ func (s *Store) SaveReceiptImage(ctx context.Context, householdID int64, sha256H
 }
 
 func (s *Store) SaveReceiptImageWithQuota(ctx context.Context, householdID, maxQuotaBytes int64, sha256Hex, mimeType string, width, height int, data []byte) (int64, error) {
+	return s.SaveReceiptWithQuota(ctx, householdID, maxQuotaBytes, sha256Hex, mimeType, width, height, data, "")
+}
+
+func (s *Store) SaveReceiptWithQuota(ctx context.Context, householdID, maxQuotaBytes int64, sha256Hex, mimeType string, width, height int, data []byte, receiptURL string) (int64, error) {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -155,27 +159,59 @@ func (s *Store) SaveReceiptImageWithQuota(ctx context.Context, householdID, maxQ
 	if err != nil {
 		return 0, err
 	}
+	var urlEnc []byte
+	if receiptURL != "" {
+		urlEnc, err = crypto.Encrypt(dek, crypto.AAD(householdID, "receipt_images", id, "receipt_url"), []byte(receiptURL))
+		if err != nil {
+			return 0, err
+		}
+	}
 
 	if maxQuotaBytes > 0 {
 		var used int64
 		if err := tx.QueryRowContext(ctx, `
-			SELECT COALESCE(SUM(length(data) + COALESCE(length(data_enc), 0)), 0)
+			SELECT COALESCE(SUM(length(data) + COALESCE(length(data_enc), 0) + COALESCE(length(receipt_url_enc), 0)), 0)
 			FROM receipt_images WHERE household_id = ?
 		`, householdID).Scan(&used); err != nil {
 			return 0, err
 		}
-		if used+int64(len(ct)) > maxQuotaBytes {
+		if used+int64(len(ct)+len(urlEnc)) > maxQuotaBytes {
 			return 0, ErrQuotaExceeded
 		}
 	}
 
-	if _, err := tx.ExecContext(ctx, `UPDATE receipt_images SET data_enc = ? WHERE id = ?`, ct, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE receipt_images SET data_enc = ?, receipt_url_enc = ? WHERE id = ?`, ct, urlEnc, id); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
 	return id, nil
+}
+
+func (s *Store) GetReceiptURL(ctx context.Context, householdID, id int64) (string, error) {
+	var urlEnc, wrappedDEK []byte
+	var keyVersion int
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT r.receipt_url_enc, h.dek_wrapped, h.kek_version
+		FROM receipt_images r JOIN households h ON h.id = r.household_id
+		WHERE r.id = ? AND h.id = ?
+	`, id, householdID).Scan(&urlEnc, &wrappedDEK, &keyVersion)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil || len(urlEnc) == 0 {
+		return "", err
+	}
+	if s.Keys == nil {
+		return "", crypto.ErrMissingMasterKey
+	}
+	dek, err := s.Keys.UnwrapKey(wrappedDEK, keyVersion, householdID)
+	if err != nil {
+		return "", err
+	}
+	clear, err := crypto.Decrypt(dek, crypto.AAD(householdID, "receipt_images", id, "receipt_url"), urlEnc)
+	return string(clear), err
 }
 
 func (s *Store) GetReceiptImage(ctx context.Context, householdID, id int64) (ReceiptImage, error) {

@@ -25,6 +25,8 @@ var (
 // Processed holds the normalized JPEG bytes and metadata for storage and OCR.
 type Processed struct {
 	Data       []byte
+	OCRData    []byte
+	ReceiptURL string
 	MimeType   string
 	SHA256     string
 	Width      int
@@ -36,6 +38,15 @@ type Processed struct {
 // Process validates, decodes, EXIF-orients, downscales if needed, and re-encodes
 // a JPEG or PNG upload into a bounded JPEG suitable for OCR and SQLite storage.
 func Process(r io.Reader, maxUploadBytes int64, maxInputDim int, maxStoredDim int) (*Processed, error) {
+	return process(r, maxUploadBytes, maxInputDim, maxStoredDim, false, false)
+}
+
+// ProcessReceipt also reads the QR and optionally prepares a higher-resolution OCR image.
+func ProcessReceipt(r io.Reader, maxUploadBytes int64, maxInputDim, maxStoredDim int, prepareOCR bool) (*Processed, error) {
+	return process(r, maxUploadBytes, maxInputDim, maxStoredDim, true, prepareOCR)
+}
+
+func process(r io.Reader, maxUploadBytes int64, maxInputDim, maxStoredDim int, readQR, prepareOCR bool) (*Processed, error) {
 	limited := io.LimitReader(r, maxUploadBytes+1)
 	raw, err := io.ReadAll(limited)
 	if err != nil {
@@ -68,33 +79,51 @@ func Process(r io.Reader, maxUploadBytes int64, maxInputDim int, maxStoredDim in
 		}
 	}
 
-	bounds := img.Bounds()
-	w, h := bounds.Dx(), bounds.Dy()
-	if w > maxStoredDim || h > maxStoredDim {
-		nw, nh := fitBounds(w, h, maxStoredDim)
-		dst := image.NewRGBA(image.Rect(0, 0, nw, nh))
-		draw.CatmullRom.Scale(dst, dst.Bounds(), img, bounds, draw.Over, nil)
-		img = dst
-		w, h = nw, nh
+	stored := resize(img, maxStoredDim)
+	encoded, err := encodeJPEG(stored, 85)
+	if err != nil {
+		return nil, err
 	}
-
-	var out bytes.Buffer
-	if err := jpeg.Encode(&out, img, &jpeg.Options{Quality: 85}); err != nil {
-		return nil, fmt.Errorf("encode jpeg: %w", err)
-	}
-
-	encoded := out.Bytes()
 	sum := sha256.Sum256(encoded)
-
-	return &Processed{
+	out := &Processed{
 		Data:       encoded,
 		MimeType:   "image/jpeg",
 		SHA256:     hex.EncodeToString(sum[:]),
-		Width:      w,
-		Height:     h,
+		Width:      stored.Bounds().Dx(),
+		Height:     stored.Bounds().Dy(),
 		OrigWidth:  cfg.Width,
 		OrigHeight: cfg.Height,
-	}, nil
+	}
+	if readQR {
+		out.ReceiptURL = decodeReceiptQR(img)
+	}
+	if prepareOCR {
+		out.OCRData, err = encodeJPEG(receiptOCRImage(img), 95)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func resize(img image.Image, maxDim int) image.Image {
+	bounds := img.Bounds()
+	w, h := bounds.Dx(), bounds.Dy()
+	if w <= maxDim && h <= maxDim {
+		return img
+	}
+	nw, nh := fitBounds(w, h, maxDim)
+	dst := image.NewRGBA(image.Rect(0, 0, nw, nh))
+	draw.CatmullRom.Scale(dst, dst.Bounds(), img, bounds, draw.Over, nil)
+	return dst
+}
+
+func encodeJPEG(img image.Image, quality int) ([]byte, error) {
+	var out bytes.Buffer
+	if err := jpeg.Encode(&out, img, &jpeg.Options{Quality: quality}); err != nil {
+		return nil, fmt.Errorf("encode jpeg: %w", err)
+	}
+	return out.Bytes(), nil
 }
 
 func fitBounds(w, h, maxDim int) (int, int) {

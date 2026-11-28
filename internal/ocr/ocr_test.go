@@ -75,3 +75,37 @@ ITEM B 15,00`
 		t.Fatalf("expected CheckAmount=true when no total label")
 	}
 }
+
+func TestParseGreekSupermarketReceipt(t *testing.T) {
+	sample := `Α-Β ΒΑΣΙΛΟΠΟΥΛΟΣ Μ.Α.Ε.
+ΥΠΟΚ: ΑΚΡΟΠΟΛΗΣ
+ΑΠΟΔΕΙΞΗ ΛΙΑΝΙΚΩΝ ΣΥΝΑΛΛΑΓΩΝ
+ΠΡΟΪΟΝ 2,80 13,00%
+ΣΥΝΟΛΟ
+5,60 ΕΥΡΩ
+ΣΥΝΟΛΟ ΕΙΔΩΝ *3*
+ΡΕΣΤΑ 0,00
+ΠΙΣΤ.ΚΑΡΤΕΣ EDPS 5,60
+ΑΝΑΛΥΣΗ ΦΠΑ
+13,00% 4,86 0,63
+ΗΜΕΡ: 28/11/2026 ΩΡΑ: 11:28`
+	got := ParseReceipt(sample, time.UTC)
+	if got.Merchant != "Α-Β ΒΑΣΙΛΟΠΟΥΛΟΣ Μ.Α.Ε." || got.Date != "2026-11-28" ||
+		got.AmountCents != 560 || got.CheckAmount || got.PaymentHint != "card" {
+		t.Fatalf("unexpected receipt: %+v", got)
+	}
+}
+
+func TestParseDiscountedReceipt(t *testing.T) {
+	sample := `LUKUMADES STORES
+Ωρα 28-11-2026 11:22
+ΣΥΝΟΛΟ 6,40 €
+ΕΚΠΤΩΣΗ 1,00 €
+ΠΛΗΡΩΤΕΟ 5, 40 €
+ΜΕΤΡΗΤΑ Ε 10,00 €
+ΡΕΣΤΑ 4,60 €`
+	got := ParseReceipt(sample, time.UTC)
+	if got.AmountCents != 540 || got.CheckAmount || got.PaymentHint != "cash" {
+		t.Fatalf("unexpected receipt: %+v", got)
+	}
+}

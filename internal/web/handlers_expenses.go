@@ -46,6 +46,7 @@ type expenseFormData struct {
 	SubmissionToken   string
 	DraftID          string
 	ReceiptImageID   int64
+	ReceiptURL        string
 	Amount           string
 	Merchant         string
 	PurchaseDate     string
@@ -145,7 +146,7 @@ func (s *Server) handleScanPost(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	proc, err := imageproc.Process(file, s.cfg.MaxUploadBytes, s.cfg.MaxImageDim, s.cfg.MaxStoredDim)
+	proc, err := imageproc.ProcessReceipt(file, s.cfg.MaxUploadBytes, s.cfg.MaxImageDim, s.cfg.MaxStoredDim, true)
 	if err != nil {
 		s.render(w, r, "scan.html", http.StatusBadRequest, scanPageData{
 			BasePage:          s.newBasePage(w, r, "Scan receipt", "overview", true),
@@ -170,7 +171,7 @@ func (s *Server) handleScanPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	imgID, err := s.store.SaveReceiptImageWithQuota(r.Context(), hhID, s.cfg.MaxHouseholdQuotaBytes, proc.SHA256, proc.MimeType, proc.Width, proc.Height, proc.Data)
+	imgID, err := s.store.SaveReceiptWithQuota(r.Context(), hhID, s.cfg.MaxHouseholdQuotaBytes, proc.SHA256, proc.MimeType, proc.Width, proc.Height, proc.Data, proc.ReceiptURL)
 	if errors.Is(err, db.ErrQuotaExceeded) {
 		s.render(w, r, "scan.html", http.StatusRequestEntityTooLarge, scanPageData{
 			BasePage:          s.newBasePage(w, r, "Scan receipt", "overview", true),
@@ -201,7 +202,7 @@ func (s *Server) handleScanPost(w http.ResponseWriter, r *http.Request) {
 		OCRStatus:      "ok",
 	}
 
-	rawText, scanErr := s.scanner.Scan(r.Context(), proc.Data)
+	parsed, rawText, scanErr := s.scanner.Scan(r.Context(), proc.OCRData, s.cfg.Location)
 	if scanErr != nil {
 		switch {
 		case errors.Is(scanErr, ocr.ErrBusy):
@@ -221,7 +222,6 @@ func (s *Server) handleScanPost(w http.ResponseWriter, r *http.Request) {
 			draft.CategoryID = cat.ID
 		}
 	} else {
-		parsed := ocr.ParseReceipt(rawText, s.cfg.Location)
 		draft.Merchant = parsed.Merchant
 		draft.AmountCents = parsed.AmountCents
 		if parsed.Date != "" {
@@ -353,7 +353,14 @@ func (s *Server) handleExpenseNewGet(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.render(w, r, "expense_form.html", http.StatusOK, data)
+	s.renderExpenseForm(w, r, http.StatusOK, hhID, data)
+}
+
+func (s *Server) renderExpenseForm(w http.ResponseWriter, r *http.Request, status int, householdID int64, data expenseFormData) {
+	if data.ReceiptImageID > 0 {
+		data.ReceiptURL, _ = s.store.GetReceiptURL(r.Context(), householdID, data.ReceiptImageID)
+	}
+	s.render(w, r, "expense_form.html", status, data)
 }
 
 func (s *Server) handleExpenseCreatePost(w http.ResponseWriter, r *http.Request) {
@@ -387,11 +394,11 @@ func (s *Server) handleExpenseCreatePost(w http.ResponseWriter, r *http.Request)
 	if recIDVal == 0 {
 		if file, _, err := r.FormFile("attachment"); err == nil {
 			defer file.Close()
-			proc, procErr := imageproc.Process(file, s.cfg.MaxUploadBytes, s.cfg.MaxImageDim, s.cfg.MaxStoredDim)
+			proc, procErr := imageproc.ProcessReceipt(file, s.cfg.MaxUploadBytes, s.cfg.MaxImageDim, s.cfg.MaxStoredDim, false)
 			if procErr != nil {
 				attachmentErr = procErr.Error()
 			} else {
-				id, saveErr := s.store.SaveReceiptImageWithQuota(r.Context(), hhID, s.cfg.MaxHouseholdQuotaBytes, proc.SHA256, proc.MimeType, proc.Width, proc.Height, proc.Data)
+				id, saveErr := s.store.SaveReceiptWithQuota(r.Context(), hhID, s.cfg.MaxHouseholdQuotaBytes, proc.SHA256, proc.MimeType, proc.Width, proc.Height, proc.Data, proc.ReceiptURL)
 				if saveErr != nil {
 					attachmentErr = saveErr.Error()
 				} else {
@@ -498,7 +505,7 @@ func (s *Server) handleExpenseCreatePost(w http.ResponseWriter, r *http.Request)
 				Errors:            map[string]string{},
 				FormError:         "Could not save draft to inbox. Please try again.",
 			}
-			s.render(w, r, "expense_form.html", http.StatusInternalServerError, data)
+			s.renderExpenseForm(w, r, http.StatusInternalServerError, hhID, data)
 			return
 		}
 		s.setFlash(w, r, "Saved to Needs review inbox.")
@@ -576,7 +583,7 @@ func (s *Server) handleExpenseCreatePost(w http.ResponseWriter, r *http.Request)
 	}
 
 	if len(data.Errors) > 0 {
-		s.render(w, r, "expense_form.html", http.StatusUnprocessableEntity, data)
+		s.renderExpenseForm(w, r, http.StatusUnprocessableEntity, hhID, data)
 		return
 	}
 
@@ -590,7 +597,7 @@ func (s *Server) handleExpenseCreatePost(w http.ResponseWriter, r *http.Request)
 	if err == nil && len(dups) > 0 && !data.ConfirmDuplicate {
 		data.Duplicates = dups
 		data.FormError = "This looks like an existing expense. Review the match below or confirm to save anyway."
-		s.render(w, r, "expense_form.html", http.StatusConflict, data)
+		s.renderExpenseForm(w, r, http.StatusConflict, hhID, data)
 		return
 	}
 
@@ -636,7 +643,7 @@ func (s *Server) handleExpenseCreatePost(w http.ResponseWriter, r *http.Request)
 	}
 	if err != nil {
 		data.FormError = "Could not save expense. Please try again."
-		s.render(w, r, "expense_form.html", http.StatusInternalServerError, data)
+		s.renderExpenseForm(w, r, http.StatusInternalServerError, hhID, data)
 		return
 	}
 
@@ -667,16 +674,22 @@ func (s *Server) handleExpenseDetail(w http.ResponseWriter, r *http.Request) {
 		retURL = "/ledger"
 	}
 
+	var receiptURL string
+	if exp.ReceiptImageID != nil {
+		receiptURL, _ = s.store.GetReceiptURL(r.Context(), u.ActiveHouseholdID, *exp.ReceiptImageID)
+	}
 	s.render(w, r, "expense_detail.html", http.StatusOK, struct {
 		BasePage
 		Expense   db.Expense
 		Splits    []db.ExpenseSplit
 		ReturnURL string
+		ReceiptURL string
 	}{
 		BasePage:  s.newBasePage(w, r, exp.Merchant, "ledger", true),
 		Expense:   exp,
 		Splits:    splits,
 		ReturnURL: retURL,
+		ReceiptURL: receiptURL,
 	})
 }
 
@@ -719,7 +732,7 @@ func (s *Server) handleExpenseEditGet(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.render(w, r, "expense_form.html", http.StatusOK, expenseFormData{
+	s.renderExpenseForm(w, r, http.StatusOK, hhID, expenseFormData{
 		BasePage:       s.newBasePage(w, r, "Edit expense", "ledger", true),
 		Heading:        "Edit expense",
 		ActionURL:      fmt.Sprintf("/expenses/%d/edit", exp.ID),
@@ -832,7 +845,7 @@ func (s *Server) handleExpenseEditPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(data.Errors) > 0 {
-		s.render(w, r, "expense_form.html", http.StatusUnprocessableEntity, data)
+		s.renderExpenseForm(w, r, http.StatusUnprocessableEntity, hhID, data)
 		return
 	}
 
@@ -861,7 +874,7 @@ func (s *Server) handleExpenseEditPost(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		data.FormError = "Could not update expense."
-		s.render(w, r, "expense_form.html", http.StatusInternalServerError, data)
+		s.renderExpenseForm(w, r, http.StatusInternalServerError, hhID, data)
 		return
 	}
 

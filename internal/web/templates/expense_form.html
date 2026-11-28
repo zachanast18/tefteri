@@ -67,6 +67,10 @@
       </div>
       {{end}}
 
+      {{if .ReceiptURL}}
+      <div><a class="btn btn-secondary btn-sm" href="{{.ReceiptURL}}" target="_blank" rel="noopener noreferrer">Open QR receipt link</a></div>
+      {{end}}
+
       <div class="field">
         <label for="amount">Amount paid ({{.Currency}})</label>
         {{if .CheckAmount}}<span class="field-check-prompt">Check amount</span>{{end}}
