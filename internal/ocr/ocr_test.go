@@ -74,6 +74,36 @@ ITEM B 15,00`
 	if !got.CheckAmount {
 		t.Fatalf("expected CheckAmount=true when no total label")
 	}
+	if got.AmountCents != 0 || got.AmountText != "" {
+		t.Fatalf("item prices should leave the amount blank: %+v", got)
+	}
+}
+
+func TestParseGreekCashReceiptWithUnreadableTotal(t *testing.T) {
+	sample := `at  --..
+EAAHNIKES YNEPAPOPES
+ΣΚΛΑΒΕΝΙΤΗΣ Α.Ε.Ε,
+SUPER MARKETS
+ΓΑΡΥΦΑΛΛΟ 0,94 13,00%
+ΜΟΣΧΟΚΑΡΥΔΟ 1,15 13,00%
+ΗΛΙΕΛΑΙΟ 3,10 13,00%
+ZYNONO B19 Evo |
+METPHTA 20, 00
+PESTA -14,81 ;
+HMEP: 28 / 11 / 2026 9PA:13:03:59`
+	got := ParseReceipt(sample, time.UTC)
+	if got.Merchant != "ΣΚΛΑΒΕΝΙΤΗΣ Α.Ε.Ε" || got.CheckMerchant ||
+		got.Date != "2026-11-28" || got.CheckDate || got.AmountCents != 519 ||
+		!got.CheckAmount || got.PaymentHint != "cash" {
+		t.Fatalf("unexpected receipt: %+v", got)
+	}
+}
+
+func TestCashTenderWithUnreadableChangeLeavesAmountBlank(t *testing.T) {
+	got := ParseReceipt("ITEM 20,00\nMETPHTA 20,00\nPESTA ?\n", time.UTC)
+	if got.AmountCents != 0 || !got.CheckAmount || got.PaymentHint != "cash" {
+		t.Fatalf("unexpected receipt: %+v", got)
+	}
 }
 
 func TestParseGreekSupermarketReceipt(t *testing.T) {

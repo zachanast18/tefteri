@@ -61,20 +61,33 @@ func (s *Scanner) Scan(ctx context.Context, jpegBytes []byte, loc *time.Location
 		return ParsedReceipt{}, "", err
 	}
 	parsed := ParseReceipt(text, loc)
-	if parsed.PaymentHint != "" || parsed.AmountCents == 0 || runCtx.Err() != nil {
+	if (!parsed.CheckAmount && !parsed.CheckDate && !parsed.CheckMerchant && parsed.PaymentHint != "") || runCtx.Err() != nil {
 		return parsed, text, nil
 	}
 
-	cash, card := paymentEvidence(splitCleanLines(text))
-	if cash && card {
-		return parsed, text, nil
-	}
 	wider, err := imageproc.WidenReceiptForOCR(jpegBytes)
 	if err != nil {
 		return parsed, text, nil
 	}
 	if retryText, err := s.scanText(runCtx, wider); err == nil {
-		parsed.PaymentHint = extractPaymentHint(splitCleanLines(retryText))
+		retry := ParseReceipt(retryText, loc)
+		if parsed.CheckAmount && retry.amountScore > parsed.amountScore {
+			disagrees := parsed.AmountCents > 0 && parsed.AmountCents != retry.AmountCents
+			parsed.AmountCents, parsed.AmountText, parsed.amountScore = retry.AmountCents, retry.AmountText, retry.amountScore
+			parsed.CheckAmount = retry.CheckAmount || disagrees
+		} else if retry.amountScore > 0 && retry.amountScore == parsed.amountScore && retry.AmountCents != parsed.AmountCents {
+			parsed.CheckAmount = true
+		}
+		if parsed.CheckMerchant && !retry.CheckMerchant {
+			parsed.Merchant, parsed.CheckMerchant = retry.Merchant, false
+		}
+		if parsed.CheckDate && !retry.CheckDate {
+			parsed.Date, parsed.CheckDate = retry.Date, false
+		}
+		cash, card := paymentEvidence(splitCleanLines(text))
+		if !cash && !card {
+			parsed.PaymentHint = retry.PaymentHint
+		}
 	}
 	return parsed, text, nil
 }
@@ -122,14 +135,16 @@ type ParsedReceipt struct {
 	AmountText    string
 	CheckAmount   bool
 	PaymentHint   string // "cash", "card", or ""
+	amountScore   int
 }
 
 var (
-	dateDMYRe     = regexp.MustCompile(`\b(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{2,4})\b`)
-	dateYMDRe     = regexp.MustCompile(`\b(20\d{2})[/.\-](\d{1,2})[/.\-](\d{1,2})\b`)
+	dateDMYRe     = regexp.MustCompile(`\b(\d{1,2})\s*[/.\-]\s*(\d{1,2})\s*[/.\-]\s*(\d{4}|\d{2})\b`)
+	dateYMDRe     = regexp.MustCompile(`\b(20\d{2})\s*[/.\-]\s*(\d{1,2})\s*[/.\-]\s*(\d{1,2})\b`)
 	amountRe      = regexp.MustCompile(`[+-]?\d+(?:[.,]\d{3})*[.,]\s*\d{2}\b`)
-	cashLabel     = regexp.MustCompile(`(?:^|[^\pL])(?:[ΜM][ΕE][ΤT][ΡP][ΗH][ΤT][ΑA][ΕE]?|CASH)(?:$|[^\pL])`)
+	cashLabel     = regexp.MustCompile(`(?:^|[^\pL])(?:[ΜMΗH][ΕE][ΤT][ΡP][ΗH][ΤT][ΑA][ΕE]?|CASH)(?:$|[^\pL])`)
 	cardLabel     = regexp.MustCompile(`(?:^|[^\pL])(?:[ΚK][ΑA][ΡP][ΤT](?:[ΑA]|[ΕE][ΣS])|CARDS?|VISA|MASTERCARD|MAESTRO|EFTPOS)(?:$|[^\pL])`)
+	changeLabel   = regexp.MustCompile(`^[[:punct:] ]*(?:[ΡP][ΕE][ΣS][ΤT][ΑA]|CHANGE)(?:$|[^\pL])`)
 	labelVariants = strings.NewReplacer("Ά", "Α", "Έ", "Ε", "Ή", "Η", "Ί", "Ι", "Ό", "Ο", "Ύ", "Υ", "Ώ", "Ω")
 )
 
@@ -141,7 +156,10 @@ func ParseReceipt(text string, loc *time.Location) ParsedReceipt {
 
 	out.Merchant, out.CheckMerchant = extractMerchant(lines)
 	out.Date, out.CheckDate = extractDate(lines, loc)
-	out.AmountCents, out.AmountText, out.CheckAmount = extractAmount(lines)
+	out.AmountCents, out.amountScore, out.CheckAmount = extractAmount(lines)
+	if out.AmountCents > 0 {
+		out.AmountText = money.FormatInput(out.AmountCents)
+	}
 	out.PaymentHint = extractPaymentHint(lines)
 
 	return out
@@ -172,9 +190,9 @@ func extractMerchant(lines []string) (string, bool) {
 	}
 	for _, line := range lines[:limit] {
 		line = strings.TrimLeftFunc(line, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
-		line = strings.TrimRight(line, " |;=~—_")
+		line = strings.TrimRight(line, " |;=~—_,")
 		label := normalizeLabel(line)
-		if merchantMetadata.MatchString(label) || containsAny(label, skipTokens) ||
+		if merchantMetadata.MatchString(label) || genericMerchantHeading.MatchString(label) || containsAny(label, skipTokens) ||
 			strings.HasSuffix(line, ":") || strings.Contains(line, "%") ||
 			looksMostlyNumeric(line) || amountRe.MatchString(line) ||
 			(!merchantWord.MatchString(line) && !shortMerchant.MatchString(label)) ||
@@ -187,9 +205,10 @@ func extractMerchant(lines []string) (string, bool) {
 }
 
 var (
-	merchantMetadata = regexp.MustCompile(`^(?:Α\.?Φ\.?Μ|AFM|VAT|TIN|Δ\.?Ο\.?Υ|ΤΗΛ|TEL|FAX|ΥΠΟΚ|ΕΔΡΑ|ΓΕΜΗ|ΣΕΙΡΑ|ΤΑΜΙΑΣ|DATE|TIME|ΩΡΑ)(?:$|[^\pL])`)
-	merchantWord     = regexp.MustCompile(`\pL{4,}`)
-	shortMerchant    = regexp.MustCompile(`^\p{Lu}{1,3}\s*[&+]\s*\p{Lu}{1,3}$`)
+	merchantMetadata       = regexp.MustCompile(`^(?:Α\.?Φ\.?Μ|AFM|VAT|TIN|Δ\.?Ο\.?Υ|ΤΗΛ|TEL|FAX|ΥΠΟΚ|ΕΔΡΑ|ΓΕΜΗ|ΣΕΙΡΑ|ΤΑΜΙΑΣ|DATE|TIME|ΩΡΑ)(?:$|[^\pL])`)
+	genericMerchantHeading = regexp.MustCompile(`^(?:[ΕE][ΛALN]{2}[ΗH][ΝNM][ΙI][ΚK][ΕE][ΣS]\s+[ΥY][ΠNP][ΕE][ΡP]|SUPER\s*MARKETS?(?:$|[^\pL]))`)
+	merchantWord           = regexp.MustCompile(`\pL{4,}`)
+	shortMerchant          = regexp.MustCompile(`^\p{Lu}{1,3}\s*[&+]\s*\p{Lu}{1,3}$`)
 )
 
 func normalizeLabel(s string) string {
@@ -254,17 +273,32 @@ type amountCandidate struct {
 	line  int
 }
 
-func extractAmount(lines []string) (int64, string, bool) {
+func extractAmount(lines []string) (int64, int, bool) {
 	var best *amountCandidate
 	var strongCandidates []amountCandidate
+	var tender, change, cardTotal int64
+	var hasChange, knownChange, ambiguousCash, card bool
+	otherAmounts := make(map[int64]bool)
 
 	for idx, line := range lines {
-		label := normalizeLabel(line)
+		label := strings.TrimLeftFunc(normalizeLabel(line), func(r rune) bool {
+			return unicode.IsPunct(r) || unicode.IsSpace(r)
+		})
+		if changeLabel.MatchString(label) {
+			hasChange = true
+			if cents, ok := signedAmount(line); ok {
+				cents = max(cents, -cents)
+				ambiguousCash = ambiguousCash || knownChange && change != cents
+				change, knownChange = cents, true
+			}
+			continue
+		}
 		if excludedTotal.MatchString(label) {
 			continue
 		}
 
-		score := 1
+		cents := lastAmount(line)
+		score := 0
 		var totalLabel string
 		switch {
 		case payableTotal.MatchString(label):
@@ -274,18 +308,28 @@ func extractAmount(lines []string) (int64, string, bool) {
 			score = 60
 			totalLabel = receiptTotal.FindString(label)
 		case cardLabel.MatchString(label):
+			card = true
+			if cents > 0 {
+				cardTotal = cents
+			}
 			score = 40
 		case cashLabel.MatchString(label):
-			// Cash tender can include change.
+			if cents > 0 {
+				ambiguousCash = ambiguousCash || tender != 0 && tender != cents
+				tender = cents
+			}
 			continue
 		}
 
-		cents := lastAmount(line)
 		if cents == 0 && totalLabel != "" && !strings.ContainsFunc(strings.TrimPrefix(label, totalLabel), unicode.IsLetter) &&
 			idx+1 < len(lines) && standaloneAmount.MatchString(normalizeLabel(lines[idx+1])) {
 			cents = lastAmount(lines[idx+1])
 		}
 		if cents == 0 {
+			continue
+		}
+		otherAmounts[cents] = true
+		if score == 0 {
 			continue
 		}
 
@@ -299,12 +343,27 @@ func extractAmount(lines []string) (int64, string, bool) {
 		}
 	}
 
+	// Cash tender is useful only with a readable change line or when another
+	// printed line confirms the same amount and no change line exists.
+	var cashTotal int64
+	if !ambiguousCash && !card && tender > 0 {
+		if knownChange && change < tender {
+			cashTotal = tender - change
+		} else if !hasChange && otherAmounts[tender] {
+			cashTotal = tender
+		}
+	}
+	if cashTotal > 0 && (best == nil || best.score < 55) {
+		best = &amountCandidate{cents: cashTotal, score: 55}
+	}
 	if best == nil {
-		return 0, "", true
+		return 0, 0, true
 	}
 
 	// If we didn't match any explicit total label, flag for review.
-	needsCheck := best.score < 60
+	needsCheck := best.score < 60 ||
+		cashTotal > 0 && cashTotal != best.cents ||
+		cardTotal > 0 && cardTotal != best.cents
 	for _, c := range strongCandidates {
 		if c.score == best.score && c.cents != best.cents {
 			needsCheck = true
@@ -312,28 +371,38 @@ func extractAmount(lines []string) (int64, string, bool) {
 		}
 	}
 
-	return best.cents, money.FormatInput(best.cents), needsCheck
+	return best.cents, best.score, needsCheck
 }
 
 var (
 	payableTotal     = regexp.MustCompile(`^(?:ΤΕΛΙΚΟ ΣΥΝΟΛΟ|ΠΛΗΡΩΤΕΟ|ΣΥΝΟΛΟ ΠΛΗΡΩΜΗΣ|GRAND TOTAL|TOTAL DUE|AMOUNT DUE|AMOUNT PAID|TOTAL TO PAY|BALANCE DUE)(?:$|[^\pL])`)
-	receiptTotal     = regexp.MustCompile(`^(?:ΣΥΝΟΛΟ|(?:YOUR )?TOTAL)(?:$|[^\pL])`)
+	receiptTotal     = regexp.MustCompile(`^(?:[ΣSZ][ΥY][ΝN][ΟO0][Λ/][ΟO0]|(?:YOUR )?TOTAL)(?:$|[^\pL])`)
 	excludedTotal    = regexp.MustCompile(`(?:^|[^\pL])(?:ΜΕΡΙΚΟ|SUB[ -]?TOTAL|Φ\.?Π\.?Α|VAT|TAX|ΚΑΘΑΡΗ|NET|ΡΕΣΤΑ|CHANGE|ΕΚΠΤΩΣΗ|DISCOUNT|ΕΔΩΣΕ|TENDERED|CASH GIVEN|ΕΙΣΠΡΑΞΗ|ΣΥΝΟΛΟ ΕΙΔΩΝ|TOTAL ITEMS)(?:$|[^\pL])`)
 	standaloneAmount = regexp.MustCompile(`^(?:(?:EUR|ΕΥΡΩ|[€$£])\s*)?[+-]?\d+(?:[.,]\d{3})*[.,]\s*\d{2}\s*(?:EUR|ΕΥΡΩ|[€$£])?$`)
 )
 
 func lastAmount(line string) int64 {
+	cents, _ := findAmount(line, false)
+	return cents
+}
+
+func signedAmount(line string) (int64, bool) {
+	return findAmount(line, true)
+}
+
+func findAmount(line string, allowNonPositive bool) (int64, bool) {
 	var cents int64
+	var found bool
 	for _, match := range amountRe.FindAllStringIndex(line, -1) {
 		if strings.HasPrefix(strings.TrimSpace(line[match[1]:]), "%") {
 			continue
 		}
-		value, err := money.ParsePositive(strings.Join(strings.Fields(line[match[0]:match[1]]), ""))
-		if err == nil && value <= 100_000_000 {
-			cents = value
+		value, err := money.Parse(strings.Join(strings.Fields(line[match[0]:match[1]]), ""))
+		if err == nil && (value > 0 || allowNonPositive) && value >= -100_000_000 && value <= 100_000_000 {
+			cents, found = value, true
 		}
 	}
-	return cents
+	return cents, found
 }
 
 func extractPaymentHint(lines []string) string {

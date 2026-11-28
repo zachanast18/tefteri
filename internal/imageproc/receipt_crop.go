@@ -22,7 +22,7 @@ func WidenReceiptForOCR(data []byte) ([]byte, error) {
 }
 
 func receiptOCRImage(img image.Image) image.Image {
-	img = resize(cropReceiptSides(img), 2300)
+	img = resize(cropReceipt(img), 2300)
 	bounds := img.Bounds()
 	gray := image.NewGray(image.Rect(0, 0, bounds.Dx(), bounds.Dy()))
 	// Increase separation between dark text and the paper on thermal receipts.
@@ -36,9 +36,8 @@ func receiptOCRImage(img image.Image) image.Image {
 	return gray
 }
 
-// cropReceiptSides removes contrasting background to either side of a
-// centered receipt. Keep the full height and leave ambiguous images intact.
-func cropReceiptSides(img image.Image) image.Image {
+// cropReceipt removes contrasting background and leaves ambiguous images intact.
+func cropReceipt(img image.Image) image.Image {
 	cropper, ok := img.(interface {
 		SubImage(image.Rectangle) image.Image
 	})
@@ -69,25 +68,53 @@ func cropReceiptSides(img image.Image) image.Image {
 		return total / (end - start)
 	}
 	paper := mean(w*2/5, w*3/5)
-	leftBackground, rightBackground := mean(w/20, w/6), mean(w*5/6, w*19/20)
-	if paper-leftBackground < 20 || paper-rightBackground < 20 {
-		return img
+	findSides := func(border, edge int) (left, right int, ok bool) {
+		leftBackground, rightBackground := mean(border, edge), mean(w-edge, w-border)
+		if paper-leftBackground < 20 || paper-rightBackground < 20 {
+			return 0, 0, false
+		}
+		left, right = w/2, w/2
+		for left > edge && mean(left-3, left) > (paper+leftBackground)/2 {
+			left--
+		}
+		for right < w-edge && mean(right, right+3) > (paper+rightBackground)/2 {
+			right++
+		}
+		return left, right, left > edge && right < w-edge && right-left >= w/4
 	}
-	left, right := w/2, w/2
-	for left > w/6 && mean(left-3, left) > (paper+leftBackground)/2 {
-		left--
-	}
-	for right < w*5/6 && mean(right, right+3) > (paper+rightBackground)/2 {
-		right++
-	}
-	if left == w/6 || right == w*5/6 || right-left < w/4 {
-		return img
+	left, right, centered := findSides(w/20, w/6)
+	if !centered {
+		left, right, ok = findSides(w/40, w/12)
+		if !ok {
+			return img
+		}
 	}
 	// Column averages follow the most common edge position. Keep a margin
 	// for mild skew and curled edges.
 	left = max(0, left-w/100)
 	right = min(w, right+w/100)
+	if !centered {
+		// Remove a dark strip above off-center paper. It can be read as
+		// several lines of text before the merchant header.
+		var streak int
+		midLeft, midRight := left+(right-left)/3, right-(right-left)/3
+		for y := 0; y < h/4; y++ {
+			var luminance int
+			for x := midLeft; x < midRight; x++ {
+				luminance += int(color.GrayModel.Convert(sample.At(b.Min.X+x, b.Min.Y+y)).(color.Gray).Y)
+			}
+			if luminance >= (paper-16)*(midRight-midLeft) {
+				streak++
+				if streak == 5 {
+					bounds.Min.Y += max(0, y-7) * bounds.Dy() / h
+					break
+				}
+			} else {
+				streak = 0
+			}
+		}
+	}
 	bounds.Max.X = bounds.Min.X + (right*bounds.Dx()+w-1)/w
-	bounds.Min.X = img.Bounds().Min.X + left*img.Bounds().Dx()/w
+	bounds.Min.X += left * img.Bounds().Dx() / w
 	return cropper.SubImage(bounds)
 }
